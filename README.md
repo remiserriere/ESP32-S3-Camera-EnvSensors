@@ -164,9 +164,11 @@ app.run(host="0.0.0.0", port=8080)
 - **Camera GPIO mapping**: Pin assignments in `src/config.h` are based on community reports. Cross-check with the official Freenove schematic — incorrect pins will cause `esp_camera_init` to fail with `0x105`.
 - **Sensor I²C pins**: GPIO 2/3 defaults need verification against the Freenove header labels.
 - **HTTPS upload**: The uploader uses plain HTTP. Add `http.setInsecure()` or a CA certificate bundle for HTTPS endpoints.
+- **HTTPS OTA from GitHub Releases**: Requires `WiFiClientSecure` — the current HTTP client does not support TLS. Use the self-hosted HTTP manifest for now.
 - **Photo retry logic**: `photoRetryCount` is tracked but the scheduler does not yet implement exponential back-off for upload failures.
 - **Multi-sensor BTHome**: Only the first DS18B20 temperature is advertised. Extend `bthome.cpp` with additional object IDs for multi-sensor payloads if needed.
 - **GPS coordinates**: `latitude`/`longitude` in upload metadata are hardcoded to 0. Wire up a GPS module or set static coordinates in `main.cpp` if location tagging is needed.
+- **OTA partition size**: The default two-OTA partition layout limits the application to ~1.3 MB. If the firmware grows (more libraries, larger buffers), switch to `default_8MB.csv` on a board with 8 MB flash.
 
 ---
 
@@ -186,3 +188,95 @@ pio run -e freenove_esp32s3 --target upload --target monitor
 The first build downloads the ESP32 Arduino core and all library dependencies (~5–10 minutes). Subsequent builds are incremental.
 
 > **Board note**: `board = esp32-s3-devkitc-1` is used as the closest stock PlatformIO board definition. The `board_build.arduino.memory_type = qio_opi` flag enables the octal PSRAM required for UXGA JPEG frame buffers.
+
+---
+
+## CI / CD & Releases
+
+### Continuous Integration
+
+Every push and pull request triggers the **CI – Build Firmware** workflow (`.github/workflows/ci.yml`):
+
+- Builds the firmware with PlatformIO on `ubuntu-latest`
+- Embeds `FIRMWARE_VERSION = ci-<short-sha>` at compile time
+- Uploads `firmware.bin` + `firmware.elf` as GitHub Actions artifacts (7-day retention)
+
+The PlatformIO package cache is keyed on `platformio.ini` so rebuilds after a dependency change are fast.
+
+### Creating a Release
+
+Push a semantic version tag to trigger the **Release** workflow (`.github/workflows/release.yml`):
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The workflow will:
+1. Build the firmware with `FIRMWARE_VERSION = v1.2.3` baked in
+2. Generate an OTA manifest (`manifest.json`) pointing at the binary asset URL
+3. Create a GitHub Release with auto-generated release notes and attach:
+   - `firmware-v1.2.3.bin` — the flashable binary
+   - `firmware-v1.2.3.elf` — the ELF with debug symbols
+   - `manifest.json` — the OTA manifest consumed by running devices
+
+Tags containing `-alpha`, `-beta`, or `-rc` are automatically marked as **pre-releases**.
+
+---
+
+## OTA (Over-The-Air) Updates
+
+Two OTA mechanisms are provided, each suited to different scenarios.
+
+### 1. HTTP OTA — production updates
+
+During the daily Wi-Fi session (photo upload), the device automatically checks `OTA_MANIFEST_URL` for a newer firmware version. If one is found, it downloads and flashes the binary in the same session, then restarts.
+
+**Self-hosted flow (default):**
+
+```
+OTA_MANIFEST_URL = "http://192.168.1.100:8080/firmware/manifest.json"
+```
+
+Serve a `manifest.json` from the same Docker container as the photo upload service:
+
+```json
+{
+  "version": "v1.2.3",
+  "url": "http://192.168.1.100:8080/firmware/firmware.bin",
+  "notes": "Optional release notes"
+}
+```
+
+**GitHub Releases flow:**
+
+Point `OTA_MANIFEST_URL` at the `manifest.json` asset published by the Release workflow:
+
+```
+https://github.com/<your-username>/ESP32-S3-Camera-EnvSensors/releases/latest/download/manifest.json
+```
+
+> ⚠️ GitHub asset URLs use HTTPS. The current uploader uses plain `HTTPClient`. For HTTPS you must use `WiFiClientSecure` and either pin the root CA certificate or call `setInsecure()` (not recommended in production). A follow-up improvement is tracked in the Known Limitations section.
+
+Partition scheme: `default.csv` (two OTA partitions) is required — `huge_app.csv` provides only one partition and cannot do OTA. If app size exceeds ~1.3 MB, switch to `default_8MB.csv` on an 8 MB flash board.
+
+### 2. ArduinoOTA — development / manual updates
+
+ArduinoOTA lets you push firmware over the network from PlatformIO or the Arduino IDE without a USB cable.
+
+**Trigger maintenance mode** (device stays awake and waits for a push):
+
+| Method | How |
+|---|---|
+| **GPIO** | Hold the BOOT button (GPIO 0 = `OTA_MAINTENANCE_GPIO`) at power-on |
+| **NVS flag** | Call `ota::requestMaintenanceMode(true)` from any code path before sleeping (e.g. via a serial command or a REST endpoint exposed by the upload server) |
+
+Once in maintenance mode:
+- Device connects to Wi-Fi and prints its IP on the serial monitor
+- Open a terminal: `pio run -t upload --upload-port <device-IP>`
+- Or use the Arduino IDE: *Sketch → Upload Using Programmer → Network port*
+- ArduinoOTA password is set by `OTA_DEVICE_PASSWORD` in `config.h`
+- If no push arrives within `OTA_MAINTENANCE_TIMEOUT_MS` (default 2 min), the device resumes normal operation
+
+To disable the GPIO trigger, set `OTA_MAINTENANCE_GPIO = -1` in `config.h`.
+To disable all OTA logic, set `OTA_ENABLED = false`.

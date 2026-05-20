@@ -7,6 +7,7 @@
  *   - Wi-Fi + HTTP POST only for daily photo upload
  *   - NTP sync only on first boot and opportunistically before photo
  *   - State kept in RTC memory (boot-to-boot) and NVS (power-cycle resilient)
+ *   - OTA: HTTP manifest check during Wi-Fi session + ArduinoOTA maintenance mode
  */
 
 #include <Arduino.h>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "config.h"
+#include "version.h"
 #include "persistence.h"
 #include "time_manager.h"
 #include "scheduler.h"
@@ -26,6 +28,7 @@
 #include "bthome/bthome.h"
 #include "camera/camera_module.h"
 #include "uploader/uploader.h"
+#include "ota/ota.h"
 
 // ─────────────────────────────────────────────
 //  Sensor reading results (populated per wake)
@@ -129,9 +132,16 @@ static void runPhotoTask() {
         return;
     }
 
-    // NTP re-sync if needed
+    // NTP re-sync if needed (Wi-Fi is already up – no extra cost)
     if (time_manager::needsResync()) {
         time_manager::syncNtp();
+    }
+
+    // ── OTA check while Wi-Fi is already connected ───────────────────────
+    // checkAndApply() resets the device if a new firmware is flashed,
+    // so the lines below are only reached when there is no pending update.
+    if (OTA_ENABLED) {
+        ota::checkAndApply();
     }
 
     // Capture
@@ -186,10 +196,21 @@ void setup() {
     Serial.begin(115200);
     delay(200);  // settle USB CDC
 
-    Serial.printf("\n\n=== Boot #%u ===\n", getRtcState().bootCount + 1);
+    Serial.printf("\n\n=== Boot #%u  fw:%s ===\n",
+                  getRtcState().bootCount + 1, FIRMWARE_VERSION);
 
-    // Open NVS
+    // Open NVS early – needed by ota::isMaintenanceModeRequested()
     nvs::begin();
+
+    // ── Maintenance mode check (before anything else) ────────────────────
+    // Triggered by holding OTA_MAINTENANCE_GPIO low at boot, or by a NVS flag
+    // set remotely (e.g. via a Home Assistant automation).
+    if (ota::isMaintenanceModeRequested()) {
+        Serial.println("[MAIN] Maintenance mode requested – entering ArduinoOTA standby");
+        ota::enterMaintenanceMode(OTA_MAINTENANCE_TIMEOUT_MS);
+        // Returns after timeout or after a successful OTA (which resets the device).
+        // Fall through to normal operation if no update was pushed.
+    }
 
     // Restore / estimate current time from RTC memory + NVS
     bool timeOk = time_manager::init();
@@ -218,7 +239,7 @@ void setup() {
     // Run sensor tasks (publishes via BTHome BLE)
     runSensorTasks(flags);
 
-    // Run photo task (uses WiFi, camera)
+    // Run photo task (uses WiFi, camera) + OTA check during the same Wi-Fi session
     if (flags.takePhoto) {
         runPhotoTask();
     }

@@ -1,6 +1,34 @@
 # ESP32-S3-Camera-EnvSensors
 
-Custom PlatformIO/Arduino firmware for the **Freenove ESP32-S3 WROOM** with OV2640 camera. Reads environmental sensors, publishes data over **BTHome BLE** (compatible with Home Assistant), and captures a daily JPEG photo uploaded via HTTP POST — all with a deep-sleep-first power strategy.
+Custom PlatformIO/Arduino firmware for the **Freenove ESP32-S3 WROOM** with OV2640 camera.
+
+- Reads environmental and power sensors (DS18B20, SHT3x, INA219)
+- Publishes readings over **BTHome BLE** — detected automatically by Home Assistant
+- Takes a **daily JPEG photo** at a configurable time and uploads it via HTTP POST
+- Runs on **battery + solar** thanks to a deep-sleep-first power strategy
+- Fully configurable at runtime via a **serial CLI** — no recompile needed for day-to-day changes
+- Supports **OTA firmware updates** (HTTP manifest or ArduinoOTA maintenance mode)
+
+---
+
+## Table of Contents
+
+1. [Architecture](#architecture)
+2. [Project Structure](#project-structure)
+3. [Supported Sensors & Wiring](#supported-sensors--wiring)
+4. [Configuration System](#configuration-system)
+   - [Two-layer design](#two-layer-design)
+   - [Compile-time defaults — `src/config.h`](#compile-time-defaults--srcconfigh)
+   - [Runtime configuration — Serial CLI](#runtime-configuration--serial-cli)
+   - [Runtime configuration — NVS](#runtime-configuration--nvs)
+5. [Power Strategy](#power-strategy)
+6. [BTHome / Home Assistant Integration](#bthome--home-assistant-integration)
+7. [NTP & Time Synchronisation](#ntp--time-synchronisation)
+8. [HTTP Photo Upload Service](#http-photo-upload-service)
+9. [Build & Flash](#build--flash)
+10. [CI / CD & Releases](#ci--cd--releases)
+11. [OTA Firmware Updates](#ota-firmware-updates)
+12. [Known Limitations / TODOs](#known-limitations--todos)
 
 ---
 
@@ -9,185 +37,492 @@ Custom PlatformIO/Arduino firmware for the **Freenove ESP32-S3 WROOM** with OV26
 ```
 Boot / Wake
     │
-    ├─ Restore time from RTC memory / NVS
-    │    └─ If untrusted → connect WiFi → NTP sync → disconnect WiFi
+    ├─ device_config::load()          Load runtime config from NVS (or defaults)
     │
-    ├─ Evaluate scheduler (which tasks are due?)
+    ├─ serial_cli::offerConfigWindow() 3-second window → press a key to open menu
     │
-    ├─ Sensor tasks (DS18B20, SHT3x, INA219, LC709203F)
-    │    └─ Publish all readings via BTHome BLE advertisement
+    ├─ ota::isMaintenanceModeRequested()
+    │    └─ If yes → ArduinoOTA standby (GPIO trigger or NVS flag)
     │
-    ├─ Photo task (if scheduled window reached, not yet taken today)
-    │    ├─ Connect WiFi
-    │    ├─ NTP re-sync if time is stale (> 6 h since last sync)
-    │    ├─ Capture JPEG from OV2640
-    │    ├─ HTTP POST multipart upload
-    │    └─ Disconnect WiFi
+    ├─ time_manager::init()           Restore epoch from RTC memory / NVS
+    │    └─ If untrusted → WiFi → NTP sync → WiFi off
     │
-    └─ Deep sleep until next scheduled event
+    ├─ scheduler::evaluate()          Which tasks are due this wake?
+    │
+    ├─ Sensor tasks  (if due)
+    │    ├─ DS18B20  — OneWire temperature
+    │    ├─ SHT3x    — I²C temperature + humidity
+    │    ├─ INA219   — I²C voltage / current / power
+    │    └─ bthome::advertise()       Publish all readings over BLE (3 s)
+    │
+    ├─ Photo task  (if scheduled window reached & not yet taken today)
+    │    ├─ WiFi connect
+    │    ├─ NTP re-sync if > 6 h since last sync
+    │    ├─ ota::checkAndApply()      HTTP OTA check (resets if update found)
+    │    ├─ camera_module::capture()  JPEG from OV2640
+    │    ├─ uploader::uploadPhoto()   HTTP POST multipart/form-data
+    │    └─ WiFi disconnect
+    │
+    └─ scheduler::deepSleep()         Sleep until next sensor or photo event
 ```
 
-**Key design principles:**
-- WiFi is only active for NTP sync and photo upload — BLE is used for all sensor telemetry.
-- State is stored in RTC-retained memory (survives deep sleep) and NVS/Preferences (survives power cycles).
-- The scheduler computes the shortest sleep interval covering all upcoming sensor and photo events.
+**Key principles:**
+- WiFi is only alive during NTP sync and photo upload — BLE handles all sensor telemetry.
+- OTA check piggybacks on the photo upload Wi-Fi session — no extra wake needed.
+- RTC memory survives deep sleep; NVS/Preferences survives hard resets.
+- The scheduler always picks the **shortest** sleep that covers every upcoming event.
 
 ---
 
-## Supported Sensors
+## Project Structure
 
-| Sensor | Interface | Measurement | Config constant |
+```
+├── platformio.ini              Board, framework, libraries, version injection
+├── scripts/
+│   └── set_version.py          PlatformIO pre-build: injects FIRMWARE_VERSION
+└── src/
+    ├── config.h                Compile-time constants & defaults (GPIO pins, timeouts…)
+    ├── version.h               FIRMWARE_VERSION macro (set by build script)
+    ├── device_config.h/.cpp    Runtime DeviceConfig struct — loaded from NVS at boot
+    ├── serial_cli.h/.cpp       Interactive config menu available at boot via USB serial
+    ├── persistence.h/.cpp      RTC memory accessor + NVS (Preferences) helpers
+    ├── time_manager.h/.cpp     NTP sync, epoch estimation, drift tracking
+    ├── scheduler.h/.cpp        Wake-decision engine + deep sleep
+    ├── main.cpp                Boot sequence, task orchestration
+    ├── sensors/
+    │   ├── ds18b20.h/.cpp      OneWire DS18B20 driver (chained sensors)
+    │   ├── sht3x.h/.cpp        I²C SHT3x driver
+    │   └── ina219.h/.cpp       I²C INA219 voltage/current driver
+    ├── bthome/
+    │   └── bthome.h/.cpp       BTHome v2 BLE advertisement builder
+    ├── camera/
+    │   └── camera_module.h/.cpp  ESP32 camera init + JPEG capture
+    ├── uploader/
+    │   └── uploader.h/.cpp     WiFi connect/disconnect + HTTP POST upload
+    └── ota/
+        └── ota.h/.cpp          HTTP OTA (manifest check + flash) + ArduinoOTA mode
+```
+
+---
+
+## Supported Sensors & Wiring
+
+| Sensor | Bus | What it measures |
+|---|---|---|
+| DS18B20 (1 or more, chained) | OneWire | Temperature (°C) |
+| SHT3x (SHT30 / SHT31 / SHT35) | I²C | Temperature (°C) + Humidity (%) |
+| INA219 | I²C | Bus voltage (V), current (mA), power (mW) |
+
+### GPIO defaults (verify against your board!)
+
+| Signal | Default GPIO | Note |
+|---|---|---|
+| DS18B20 data | 14 | 4.7 kΩ pull-up to 3.3 V required |
+| I²C SDA (sensors) | 3 | shared by SHT3x, INA219 |
+| I²C SCL (sensors) | 2 | shared by SHT3x, INA219 |
+| Camera SCCB SDA | 4 | independent bus |
+| Camera SCCB SCL | 5 | independent bus |
+
+> ⚠️ **TODO**: Validate all GPIO numbers against the [Freenove ESP32-S3 WROOM schematic](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board) before first flash.
+
+### Wiring summary
+
+- **DS18B20**: Data → GPIO 14 + 4.7 kΩ to 3.3 V. Multiple sensors can share the same wire.
+- **SHT3x**: SDA/SCL on GPIO 3/2. Default I²C address 0x44 (ADDR pin low); change to 0x45 if needed.
+- **INA219**: SDA/SCL on GPIO 3/2. Default address 0x40; up to four units with address pins.
+- **Camera**: Uses its own SCCB bus (GPIO 4/5) — does not conflict with the sensor I²C bus.
+
+---
+
+## Configuration System
+
+### Two-layer design
+
+Configuration is split into two layers:
+
+| Layer | File / mechanism | Requires reflash? | Survives reset? |
 |---|---|---|---|
-| DS18B20 | OneWire | Temperature (°C) | `DS18B20_PIN`, `DS18B20_INTERVAL_MIN` |
-| SHT3x (SHT30/31/35) | I²C | Temperature + Humidity | `SHT3X_I2C_ADDR`, `SHT3X_INTERVAL_MIN` |
-| INA219 | I²C | Bus voltage, current, power | `INA219_I2C_ADDR`, `INA219_ENABLED` |
-| LC709203F | I²C | LiPo SoC (%), voltage, temperature | `LC709203F_APA`, `LC709203F_ENABLED` |
+| **Compile-time defaults** | `src/config.h` — `#define` constants | Yes | — |
+| **Runtime overrides** | NVS (flash storage) — `DeviceConfig` struct | **No** | Yes |
 
-### Wiring notes
+At every boot, `device_config::load()` populates the global `g_deviceConfig` struct:
+1. Starts from the compile-time defaults in `config.h`.
+2. Applies any values previously saved to NVS (NVS keys override defaults).
+3. All modules (`scheduler`, `uploader`, `bthome`, `ota`…) read `g_deviceConfig` — never the `#define` constants directly.
 
-- **DS18B20**: Connect data line to `DS18B20_PIN` (default GPIO 14) with a 4.7 kΩ pull-up to 3.3 V. Multiple sensors can be chained on the same bus.
-- **SHT3x / INA219 / LC709203F**: All share the I²C bus on `I2C_SDA_PIN` (default GPIO 3) and `I2C_SCL_PIN` (default GPIO 2). Verify these GPIOs against your board's pinout — the Freenove ESP32-S3 WROOM exposes I²C on header pins that may differ.
-- **Camera**: The OV2640 uses a dedicated SCCB (I²C-like) bus on `CAM_PIN_SIOD` / `CAM_PIN_SIOC` (GPIO 4 / 5), independent from the sensor I²C bus.
+This means **you only need to edit `config.h` and reflash when you change hardware** (GPIO pins, I²C addresses, bus speeds, camera pins). Everything else is runtime-configurable.
 
-> ⚠️ **TODO**: Validate all GPIO assignments against the [Freenove ESP32-S3 WROOM schematic](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board) before flashing.
+---
+
+### Compile-time defaults — `src/config.h`
+
+These are the values used on first flash and whenever no NVS override exists.
+Edit this file for hardware-level changes, then rebuild and flash once.
+
+```cpp
+// ── Wi-Fi (initial defaults — can be changed later via serial CLI) ──────────
+#define WIFI_SSID       "YOUR_SSID"
+#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
+
+// ── NTP ─────────────────────────────────────────────────────────────────────
+#define NTP_SERVER_1    "pool.ntp.org"
+#define NTP_SERVER_2    "time.google.com"
+#define NTP_TIMEZONE    "CET-1CEST,M3.5.0,M10.5.0/3"  // POSIX TZ – Europe/Paris
+
+// ── Sensor intervals (minutes) ───────────────────────────────────────────────
+#define DS18B20_INTERVAL_MIN   10
+#define SHT3X_INTERVAL_MIN      5
+#define INA219_INTERVAL_MIN     2
+#define INA219_ENABLED       true   // set false if sensor not connected
+
+// ── Daily photo ──────────────────────────────────────────────────────────────
+#define PHOTO_HOUR         14    // 14:00 local time
+#define PHOTO_MINUTE        0
+#define PHOTO_WINDOW_MIN   10    // accept trigger up to 14:10
+
+// ── HTTP upload ──────────────────────────────────────────────────────────────
+#define UPLOAD_ENDPOINT  "http://192.168.1.100:8080/upload"
+
+// ── BTHome / BLE ─────────────────────────────────────────────────────────────
+#define BTHOME_DEVICE_NAME  "ESP32-S3-Env"   // visible in Home Assistant
+
+// ── OTA ──────────────────────────────────────────────────────────────────────
+#define OTA_ENABLED       true
+#define OTA_MANIFEST_URL  "http://192.168.1.100:8080/firmware/manifest.json"
+#define OTA_DEVICE_PASSWORD  "esp32ota"     // ArduinoOTA push password
+#define OTA_MAINTENANCE_GPIO  0             // hold BOOT button = maintenance mode
+
+// ── Hardware pins (require reflash to change) ────────────────────────────────
+#define DS18B20_PIN    14
+#define I2C_SDA_PIN     3
+#define I2C_SCL_PIN     2
+#define SHT3X_I2C_ADDR  0x44
+#define INA219_I2C_ADDR 0x40
+// Camera pins: see bottom of config.h
+```
+
+---
+
+### Runtime configuration — Serial CLI
+
+The easiest way to reconfigure the device without reflashing.
+
+#### How to open the menu
+
+1. Connect the ESP32-S3 to a computer via USB.
+2. Open a serial terminal at **115200 baud** (PlatformIO monitor, minicom, PuTTY…).
+3. **Power-cycle or reset** the device.
+4. Within **3 seconds** of the boot message, press **any key**.
+
+The menu appears immediately:
+
+```
+╔══════════════════════════════════════════════════════╗
+║          ESP32-S3  –  Configuration                 ║
+╠══════════════════════════════════════════════════════╣
+║  [1]  Capteurs (présence & intervalles)             ║
+║  [2]  Planification photo                           ║
+║  [3]  Réseau (Wi-Fi / endpoint)                     ║
+║  [4]  OTA                                           ║
+║  [5]  Nom BLE                                       ║
+║  [P]  Afficher la configuration actuelle            ║
+║  [S]  Sauvegarder et reprendre le boot              ║
+║  [R]  Réinitialiser aux valeurs par défaut          ║
+║  [X]  Reprendre sans sauvegarder                   ║
+╚══════════════════════════════════════════════════════╝
+Choix:
+```
+
+#### What you can configure at runtime
+
+**[1] Sensors — presence & intervals**
+
+Enable or disable each sensor individually, and set its polling interval (1–240 min).
+Disabled sensors are completely skipped by the scheduler — they consume nothing.
+
+```
+DS18B20 activé [y] (y/n, Enter=keep): n        ← disable if not wired
+SHT3x   activé [y] (y/n, Enter=keep): y
+  Intervalle SHT3x (min) [5] (1-240, Enter=keep): 10
+INA219  activé [y] (y/n, Enter=keep): y
+  Intervalle INA219 (min) [2] (1-240, Enter=keep): 5
+```
+
+**[2] Daily photo schedule**
+
+```
+Heure (0-23)               [14] : 8    ← change to 08:00
+Minute (0-59)               [0] : 30   ← 08:30
+Fenêtre d'acceptation (min) [10]: 15   ← accept up to 08:45
+```
+
+**[3] Network**
+
+```
+SSID Wi-Fi          [MyNetwork]     : NewNetwork
+Mot de passe Wi-Fi  [***]           : (hidden input)
+Endpoint upload     [http://...]    : http://192.168.1.200:8080/upload
+```
+
+**[4] OTA**
+
+```
+OTA activé      [y] : y
+URL manifest OTA [http://...] : http://192.168.1.100:8080/firmware/manifest.json
+```
+
+**[5] BLE device name**
+
+```
+Nom BLE de l'appareil [ESP32-S3-Env] : Jardin-ESP32
+```
+
+#### Menu actions
+
+| Key | Action |
+|---|---|
+| `P` | Print current configuration (including unsaved changes) |
+| `S` | **Save** to NVS and resume boot |
+| `R` | Reset all fields to compile-time defaults (still needs `S` to persist) |
+| `X` | Resume boot without saving — changes are discarded |
+
+> **Tip**: If you miss the 3-second window, simply reset the board again.
+> The 3-second timer only runs once per physical reset.
+
+#### Factory reset
+
+To wipe all NVS overrides and return to `config.h` defaults permanently:
+
+1. Open the serial CLI (reset + press key within 3 s).
+2. Press `R` → all fields reset to defaults in memory.
+3. Press `S` → defaults are saved to NVS (overwriting previous overrides).
+
+Alternatively, erase the entire NVS partition from the command line:
+
+```bash
+pio run -t erase        # erases full flash including NVS
+# — or —
+esptool.py erase_flash  # same effect
+```
+
+After erasing, the device will use `config.h` defaults on next boot.
+
+---
+
+### Runtime configuration — NVS
+
+`g_deviceConfig` is backed by a dedicated NVS namespace (`dev_cfg`), separate from the firmware's operational state (`env_fw`). The two namespaces never conflict.
+
+**NVS keys used by `DeviceConfig`:**
+
+| Key | Type | Field |
+|---|---|---|
+| `ds18_en` | bool | DS18B20 enabled |
+| `ds18_int` | uint8 | DS18B20 interval (min) |
+| `sht_en` | bool | SHT3x enabled |
+| `sht_int` | uint8 | SHT3x interval (min) |
+| `ina_en` | bool | INA219 enabled |
+| `ina_int` | uint8 | INA219 interval (min) |
+| `ph_hour` | uint8 | Photo hour |
+| `ph_min` | uint8 | Photo minute |
+| `ph_win` | uint8 | Photo window (min) |
+| `wifi_ssid` | string | Wi-Fi SSID |
+| `wifi_pass` | string | Wi-Fi password |
+| `upload_ep` | string | Upload endpoint URL |
+| `ota_en` | bool | OTA enabled |
+| `ota_url` | string | OTA manifest URL |
+| `dev_name` | string | BLE device name |
+
+Missing keys are silently ignored — the default from `resetToDefaults()` (itself sourced from `config.h`) is used instead. This means adding a new config field in a firmware update is safe: the old NVS data is still valid for all existing keys.
 
 ---
 
 ## Power Strategy
 
-| Phase | Radio | Estimated current |
+| Wake phase | Radio state | Typical current |
 |---|---|---|
-| Deep sleep | Off | ~20 µA |
+| Deep sleep | All off | ~20 µA |
 | Sensor read + BLE advert (3 s) | BLE only | ~30–80 mA |
-| NTP sync + photo upload | WiFi only | ~100–200 mA |
-| Camera capture | WiFi + CAM | ~150–250 mA |
+| NTP sync | Wi-Fi only | ~80–150 mA |
+| Photo upload + OTA check | Wi-Fi only | ~100–200 mA |
+| Camera capture | Wi-Fi + CAM | ~150–250 mA |
 
-WiFi and BLE are **never active simultaneously** — BLE advertising completes before WiFi is brought up for the photo task.
+**Rules:**
+- BLE and Wi-Fi are **never active simultaneously**.
+- Sensors are read first; BLE advertisement finishes before Wi-Fi is started.
+- Wi-Fi stays on only for the duration of the photo task (NTP + OTA check + upload), then disconnects immediately.
+- The serial CLI window (3 s) adds a small constant overhead per boot — disable it by setting `windowMs = 0` in `main.cpp` if needed for ultra-low-power deployments.
 
----
-
-## Configuration (`src/config.h`)
-
-All tuneable parameters live in a single header. Key settings:
-
-```cpp
-// Wi-Fi credentials
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
-
-// NTP timezone (POSIX TZ string)
-#define NTP_TIMEZONE   "CET-1CEST,M3.5.0,M10.5.0/3"  // Europe/Paris
-
-// Sensor read intervals (minutes)
-#define DS18B20_INTERVAL_MIN   10
-#define SHT3X_INTERVAL_MIN     5
-#define INA219_INTERVAL_MIN    2
-#define LC709203F_INTERVAL_MIN 5
-
-// Daily photo window
-#define PHOTO_HOUR    14   // 14:00 local time
-#define PHOTO_MINUTE  0
-#define PHOTO_WINDOW_MIN 10  // accept up to 14:10
-
-// HTTP upload endpoint
-#define UPLOAD_ENDPOINT "http://192.168.1.100:8080/upload"
-
-// Disable optional sensors if not connected
-#define INA219_ENABLED    true
-#define LC709203F_ENABLED true
-
-// LC709203F battery pack APA value (see datasheet table 1)
-#define LC709203F_APA  0x30  // ~3000 mAh
-
-// I²C pins (verify against board)
-#define I2C_SDA_PIN  3
-#define I2C_SCL_PIN  2
-```
+**Rough energy estimate** (7–10 Wh battery, one photo per day, sensors every 5–10 min):
+- ~96 sensor wakes/day × 3 s × ~50 mA avg = ~4 mAh
+- ~1 photo wake/day × 30 s × ~200 mA avg = ~1.7 mAh
+- ~1440 min sleep × ~0.02 mA = ~0.5 mAh
+- **Total ≈ 6–7 mAh/day** — comfortable for a 2000 mAh pack with a small solar panel.
 
 ---
 
-## Home Assistant / BTHome Integration
+## BTHome / Home Assistant Integration
 
-The firmware advertises sensor data using the [BTHome v2](https://bthome.io/) protocol over BLE. Home Assistant (≥ 2023.6) with a Bluetooth integration discovers the device automatically as `ESP32-S3-Env`.
+The firmware uses [BTHome v2](https://bthome.io/) — a standard BLE advertisement format natively supported by Home Assistant since version 2023.6.
 
-**Advertised fields** (depending on connected sensors):
+**No MQTT, no ESPHome, no custom integration required.**
 
-| BTHome Object | Sensor |
+Home Assistant with Bluetooth discovers the device automatically and creates entities:
+
+| BTHome object ID | Measurement | Source |
+|---|---|---|
+| `0x02` — Temperature | °C | DS18B20 (primary) or SHT3x (fallback) |
+| `0x03` — Humidity | % | SHT3x |
+| `0x0C` — Voltage | V | INA219 bus voltage |
+| `0x43` — Current | A | INA219 |
+| `0x0D` — Power | W | INA219 |
+
+### Setup in Home Assistant
+
+1. Go to **Settings → Devices & Services → Add Integration → Bluetooth**.
+2. Make sure a Bluetooth adapter is available (built-in, USB dongle, or ESPHome BLE proxy).
+3. The device appears as `ESP32-S3-Env` (or whatever `deviceName` is set to).
+4. Accept the pairing — all sensor entities are created automatically.
+
+> The device advertises for **3 seconds** per wake and then stops (saves energy). HA's passive BLE scanning picks it up during the advertisement window.
+
+### BLE proxy (optional, recommended)
+
+If the ESP32 is not in direct Bluetooth range of the Home Assistant host, add a cheap ESP32 running the [ESPHome BLE proxy](https://esphome.io/components/bluetooth_proxy.html) firmware near the sensor. No further configuration needed.
+
+---
+
+## NTP & Time Synchronisation
+
+The firmware avoids NTP on every wake — it only syncs when needed:
+
+| Situation | Action |
 |---|---|
-| Temperature (0x02) | DS18B20 primary, or SHT3x fallback |
-| Humidity (0x03) | SHT3x |
-| Battery % (0x01) | LC709203F SoC |
-| Voltage (0x0C) | LC709203F cell voltage (or INA219 bus voltage) |
-| Current (0x43) | INA219 current (A) |
-| Power (0x0D) | INA219 power (W) |
+| Cold boot (no RTC sentinel) | Connect Wi-Fi → NTP sync → disconnect |
+| Warm boot (deep sleep wakeup) | Estimate time: `lastEpoch + elapsed_ms`. No Wi-Fi needed. |
+| Before photo task | If last NTP sync > 6 h ago, re-sync while Wi-Fi is already up |
+| Time not trusted | Photo task is skipped — avoids spurious photos |
 
-No MQTT broker or custom integration required — BTHome passive scanning works out of the box.
+After a successful sync, the epoch is saved to both RTC memory and NVS. On a power-cycle (RTC lost), the NVS epoch is used as starting point — typically off by only a few seconds/minutes depending on how long the device was unpowered.
 
----
-
-## NTP / Time Synchronization Strategy
-
-1. **Cold boot**: RTC magic sentinel is absent → restore last epoch from NVS → connect WiFi → sync NTP.
-2. **Warm boot (after deep sleep)**: Estimate current time as `lastEpochS + elapsed_ms_since_set`. No WiFi needed.
-3. **Before daily photo**: If last NTP sync is older than `NTP_MAX_AGE_BEFORE_RESYNC_S` (6 h), re-sync while WiFi is already up for the upload.
-4. **Scheduler photo window**: Only triggered when `isTrusted()` is true — avoids spurious photos on untrusted clocks.
+**Timezone**: set `NTP_TIMEZONE` in `config.h` to your POSIX TZ string.
+Examples: `"CET-1CEST,M3.5.0,M10.5.0/3"` (Paris), `"UTC0"`, `"EST5EDT,M3.2.0,M11.1.0"` (New York).
 
 ---
 
-## HTTP Upload Service
+## HTTP Photo Upload Service
 
-The photo task POSTs a `multipart/form-data` request to `UPLOAD_ENDPOINT` with two parts:
+The photo task sends a single `multipart/form-data` POST to `g_deviceConfig.uploadEndpoint`:
 
 | Part name | Content-Type | Content |
 |---|---|---|
-| `metadata` | `application/json` | `{"device_id":"…","timestamp":…,"lat":…,"lon":…}` |
-| `image` | `image/jpeg` | Raw JPEG bytes, filename `photo.jpg` |
+| `metadata` | `application/json` | `{"device_id":"…","timestamp":1234567890,"lat":0.0,"lon":0.0}` |
+| `image` | `image/jpeg` | Raw JPEG bytes (filename: `photo.jpg`) |
 
-A minimal Python receiver example:
+### Minimal Python/Flask receiver
+
 ```python
 from flask import Flask, request
+import os, json, time
+
 app = Flask(__name__)
+PHOTO_DIR = "photos"
+os.makedirs(PHOTO_DIR, exist_ok=True)
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    img = request.files["image"]
-    img.save(f"photos/{request.form['metadata']}.jpg")
+    meta = json.loads(request.form.get("metadata", "{}"))
+    img  = request.files.get("image")
+    if img:
+        ts   = meta.get("timestamp", int(time.time()))
+        name = f"{meta.get('device_id', 'esp32')}_{ts}.jpg"
+        img.save(os.path.join(PHOTO_DIR, name))
+        print(f"Saved {name}")
     return "", 200
 
 app.run(host="0.0.0.0", port=8080)
 ```
 
+### Docker Compose example
+
+```yaml
+services:
+  photo-receiver:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./receiver:/app
+      - ./photos:/app/photos
+    command: >
+      sh -c "pip install flask -q && python receiver.py"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+```
+
 ---
 
-## Known Limitations / TODOs
+## Build & Flash
 
-- **Camera GPIO mapping**: Pin assignments in `src/config.h` are based on community reports. Cross-check with the official Freenove schematic — incorrect pins will cause `esp_camera_init` to fail with `0x105`.
-- **Sensor I²C pins**: GPIO 2/3 defaults need verification against the Freenove header labels.
-- **HTTPS upload**: The uploader uses plain HTTP. Add `http.setInsecure()` or a CA certificate bundle for HTTPS endpoints.
-- **HTTPS OTA from GitHub Releases**: Requires `WiFiClientSecure` — the current HTTP client does not support TLS. Use the self-hosted HTTP manifest for now.
-- **Photo retry logic**: `photoRetryCount` is tracked but the scheduler does not yet implement exponential back-off for upload failures.
-- **Multi-sensor BTHome**: Only the first DS18B20 temperature is advertised. Extend `bthome.cpp` with additional object IDs for multi-sensor payloads if needed.
-- **GPS coordinates**: `latitude`/`longitude` in upload metadata are hardcoded to 0. Wire up a GPS module or set static coordinates in `main.cpp` if location tagging is needed.
-- **OTA partition size**: The default two-OTA partition layout limits the application to ~1.3 MB. If the firmware grows (more libraries, larger buffers), switch to `default_8MB.csv` on a board with 8 MB flash.
+### Prerequisites
 
----
+- [PlatformIO](https://platformio.org/) CLI or IDE extension
+- Python 3.8+
 
-## Build Instructions
+### First flash (USB cable required)
 
 ```bash
-# Install PlatformIO CLI (if not already installed)
-pip install platformio
+# 1. Clone the repo
+git clone https://github.com/<your-username>/ESP32-S3-Camera-EnvSensors.git
+cd ESP32-S3-Camera-EnvSensors
 
-# Build firmware
-pio run -e freenove_esp32s3
+# 2. (Optional) edit src/config.h with your Wi-Fi SSID/password and endpoint
+#    Everything else can be changed later via the serial CLI.
 
-# Flash and open serial monitor
+# 3. Build + flash + open monitor
 pio run -e freenove_esp32s3 --target upload --target monitor
 ```
 
-The first build downloads the ESP32 Arduino core and all library dependencies (~5–10 minutes). Subsequent builds are incremental.
+The first build downloads the ESP32 Arduino core and all library dependencies (~5–10 min). Subsequent builds are incremental and much faster.
 
-> **Board note**: `board = esp32-s3-devkitc-1` is used as the closest stock PlatformIO board definition. The `board_build.arduino.memory_type = qio_opi` flag enables the octal PSRAM required for UXGA JPEG frame buffers.
+### Monitor output on first boot
+
+```
+=== Boot #1  fw:v1.0.0  dev:ESP32-S3-Env ===
+[Config] First boot – using compile-time defaults
+[Config] Appuyez sur une touche dans 3000 ms pour ouvrir le menu de configuration...
+[Config] Aucune touche – configuration actuelle conservée.
+[MAIN] Time not trusted – syncing NTP...
+[WiFi] Connecting to MyNetwork ... OK (IP: 192.168.1.42)
+[NTP] Sync OK — 2025-05-20 14:03:21
+[WiFi] Disconnected
+[SCHED] Tasks: DS18B20=1 SHT3x=1 INA219=1 Photo=0
+[DS18B20] 2 sensors found. T[0]=21.75°C T[1]=19.50°C
+[SHT3x] T=22.10°C H=58.3%
+[INA219] V=3.82V I=142mA P=542mW
+[BTHome] Advertising for 3000 ms (14 bytes service data)
+[SLEEP] Entering deep sleep for 120 seconds
+```
+
+### Build options
+
+```bash
+# Build only (no flash)
+pio run -e freenove_esp32s3
+
+# Flash only (already built)
+pio run -e freenove_esp32s3 --target upload
+
+# Open serial monitor only
+pio device monitor --baud 115200
+
+# OTA push to a device in maintenance mode
+pio run -t upload --upload-port <device-IP>
+```
+
+> **Board note**: `esp32-s3-devkitc-1` is the closest stock board definition.
+> `board_build.arduino.memory_type = qio_opi` enables the octal PSRAM needed for UXGA JPEG buffers.
+> `board_build.partitions = default.csv` provides two OTA slots required for HTTP OTA.
 
 ---
 
@@ -195,88 +530,96 @@ The first build downloads the ESP32 Arduino core and all library dependencies (~
 
 ### Continuous Integration
 
-Every push and pull request triggers the **CI – Build Firmware** workflow (`.github/workflows/ci.yml`):
+Every push and pull request triggers **CI – Build Firmware** (`.github/workflows/ci.yml`):
 
 - Builds the firmware with PlatformIO on `ubuntu-latest`
-- Embeds `FIRMWARE_VERSION = ci-<short-sha>` at compile time
-- Uploads `firmware.bin` + `firmware.elf` as GitHub Actions artifacts (7-day retention)
-
-The PlatformIO package cache is keyed on `platformio.ini` so rebuilds after a dependency change are fast.
+- Embeds `FIRMWARE_VERSION = ci-<8-char-sha>`
+- Uploads `firmware.bin` + `firmware.elf` as artifacts (7-day retention)
+- PlatformIO package cache is keyed on `platformio.ini`
 
 ### Creating a Release
-
-Push a semantic version tag to trigger the **Release** workflow (`.github/workflows/release.yml`):
 
 ```bash
 git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow will:
-1. Build the firmware with `FIRMWARE_VERSION = v1.2.3` baked in
-2. Generate an OTA manifest (`manifest.json`) pointing at the binary asset URL
-3. Create a GitHub Release with auto-generated release notes and attach:
-   - `firmware-v1.2.3.bin` — the flashable binary
-   - `firmware-v1.2.3.elf` — the ELF with debug symbols
-   - `manifest.json` — the OTA manifest consumed by running devices
+The **Release** workflow (`.github/workflows/release.yml`) will:
 
-Tags containing `-alpha`, `-beta`, or `-rc` are automatically marked as **pre-releases**.
+1. Build with `FIRMWARE_VERSION = v1.2.3` baked in
+2. Generate `manifest.json` pointing at the binary download URL
+3. Create a GitHub Release with:
+   - `firmware-v1.2.3.bin` — flashable binary
+   - `firmware-v1.2.3.elf` — with debug symbols
+   - `manifest.json` — OTA manifest for running devices
+
+Tags containing `-alpha`, `-beta`, or `-rc` are automatically marked as pre-releases.
 
 ---
 
-## OTA (Over-The-Air) Updates
+## OTA Firmware Updates
 
-Two OTA mechanisms are provided, each suited to different scenarios.
+### 1 — HTTP OTA (automatic, during photo session)
 
-### 1. HTTP OTA — production updates
+During the daily Wi-Fi session, the device fetches `g_deviceConfig.otaManifestUrl` and compares the remote version to `FIRMWARE_VERSION`. If newer, it downloads and flashes the binary, then reboots.
 
-During the daily Wi-Fi session (photo upload), the device automatically checks `OTA_MANIFEST_URL` for a newer firmware version. If one is found, it downloads and flashes the binary in the same session, then restarts.
-
-**Self-hosted flow (default):**
-
-```
-OTA_MANIFEST_URL = "http://192.168.1.100:8080/firmware/manifest.json"
-```
-
-Serve a `manifest.json` from the same Docker container as the photo upload service:
+**Self-hosted manifest** (default, plain HTTP):
 
 ```json
 {
   "version": "v1.2.3",
   "url": "http://192.168.1.100:8080/firmware/firmware.bin",
-  "notes": "Optional release notes"
+  "notes": "Optional description"
 }
 ```
 
-**GitHub Releases flow:**
+Configure the URL via the serial CLI ([4] OTA) or set it in `config.h` before first flash.
 
-Point `OTA_MANIFEST_URL` at the `manifest.json` asset published by the Release workflow:
+**GitHub Releases manifest** (requires HTTPS — see limitations):
 
 ```
 https://github.com/<your-username>/ESP32-S3-Camera-EnvSensors/releases/latest/download/manifest.json
 ```
 
-> ⚠️ GitHub asset URLs use HTTPS. The current uploader uses plain `HTTPClient`. For HTTPS you must use `WiFiClientSecure` and either pin the root CA certificate or call `setInsecure()` (not recommended in production). A follow-up improvement is tracked in the Known Limitations section.
+### 2 — ArduinoOTA (manual, maintenance mode)
 
-Partition scheme: `default.csv` (two OTA partitions) is required — `huge_app.csv` provides only one partition and cannot do OTA. If app size exceeds ~1.3 MB, switch to `default_8MB.csv` on an 8 MB flash board.
+Lets you push a new `.bin` over Wi-Fi from PlatformIO or the Arduino IDE.
 
-### 2. ArduinoOTA — development / manual updates
-
-ArduinoOTA lets you push firmware over the network from PlatformIO or the Arduino IDE without a USB cable.
-
-**Trigger maintenance mode** (device stays awake and waits for a push):
+**Trigger maintenance mode:**
 
 | Method | How |
 |---|---|
-| **GPIO** | Hold the BOOT button (GPIO 0 = `OTA_MAINTENANCE_GPIO`) at power-on |
-| **NVS flag** | Call `ota::requestMaintenanceMode(true)` from any code path before sleeping (e.g. via a serial command or a REST endpoint exposed by the upload server) |
+| GPIO | Hold the **BOOT button** (GPIO 0) during power-on |
+| NVS flag | Call `ota::requestMaintenanceMode(true)` then reset |
 
-Once in maintenance mode:
-- Device connects to Wi-Fi and prints its IP on the serial monitor
-- Open a terminal: `pio run -t upload --upload-port <device-IP>`
-- Or use the Arduino IDE: *Sketch → Upload Using Programmer → Network port*
-- ArduinoOTA password is set by `OTA_DEVICE_PASSWORD` in `config.h`
-- If no push arrives within `OTA_MAINTENANCE_TIMEOUT_MS` (default 2 min), the device resumes normal operation
+Once in maintenance mode the device:
+- Connects to Wi-Fi
+- Prints its IP address on the serial monitor
+- Waits up to 2 minutes for a push
 
-To disable the GPIO trigger, set `OTA_MAINTENANCE_GPIO = -1` in `config.h`.
-To disable all OTA logic, set `OTA_ENABLED = false`.
+```bash
+# Push via PlatformIO
+pio run -t upload --upload-port 192.168.1.42
+```
+
+Password is set by `OTA_DEVICE_PASSWORD` in `config.h` (default: `esp32ota`).
+
+If no push arrives within `OTA_MAINTENANCE_TIMEOUT_MS` (default: 120 s), the device falls through to normal operation.
+
+**Disable OTA entirely**: set `OTA_ENABLED = false` in `config.h` or via the serial CLI.
+
+---
+
+## Known Limitations / TODOs
+
+| # | Issue | Status |
+|---|---|---|
+| 1 | **Camera GPIO mapping** not validated against Freenove schematic — wrong pins cause `esp_camera_init` error `0x105` | ⚠️ TODO |
+| 2 | **Sensor I²C pins** (GPIO 2/3) not verified against Freenove header labels | ⚠️ TODO |
+| 3 | **HTTPS upload** — `HTTPClient` does not support TLS; use plain `http://` for now | 🔜 Enhancement |
+| 4 | **HTTPS OTA from GitHub** — same TLS limitation; use self-hosted HTTP manifest | 🔜 Enhancement |
+| 5 | **Photo retry back-off** — `photoRetryCount` is tracked but no exponential delay is implemented | 🔜 Enhancement |
+| 6 | **Multi-DS18B20 BTHome** — only the first sensor's temperature is advertised | 🔜 Enhancement |
+| 7 | **GPS coordinates** — hardcoded to 0 in upload metadata | 🔜 Enhancement |
+| 8 | **OTA partition size** — `default.csv` limits the app to ~1.3 MB; switch to `default_8MB.csv` for 8 MB flash boards if firmware grows | ℹ️ Note |
+| 9 | **Serial CLI password field** is not echoed but is transmitted in plain text over USB | ℹ️ Note |

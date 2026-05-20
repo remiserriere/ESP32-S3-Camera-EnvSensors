@@ -1,5 +1,6 @@
 #include "ota.h"
 #include "../config.h"
+#include "../device_config.h"
 #include "../version.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -61,13 +62,13 @@ static bool isNewer(const String& local, const String& remote) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool ota::checkAndApply() {
-    if (!OTA_ENABLED) return false;
+    if (!g_deviceConfig.otaEnabled) return false;
 
     Serial.printf("[OTA] Current version: %s\n", FIRMWARE_VERSION);
-    Serial.printf("[OTA] Checking manifest: %s\n", OTA_MANIFEST_URL);
+    Serial.printf("[OTA] Checking manifest: %s\n", g_deviceConfig.otaManifestUrl);
 
     HTTPClient http;
-    http.begin(OTA_MANIFEST_URL);
+    http.begin(g_deviceConfig.otaManifestUrl);
     http.setTimeout(10000);
     int code = http.GET();
 
@@ -189,7 +190,7 @@ void ota::enterMaintenanceMode(uint32_t timeoutMs) {
     // Wi-Fi should already be up; if not, try to connect
     if (WiFi.status() != WL_CONNECTED) {
         WiFi.mode(WIFI_STA);
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        WiFi.begin(g_deviceConfig.wifiSsid, g_deviceConfig.wifiPassword);
         uint32_t t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) {
             delay(300);
@@ -204,7 +205,7 @@ void ota::enterMaintenanceMode(uint32_t timeoutMs) {
                   WiFi.localIP().toString().c_str(),
                   WiFi.localIP().toString().c_str());
 
-    ArduinoOTA.setHostname(BTHOME_DEVICE_NAME);
+    ArduinoOTA.setHostname(g_deviceConfig.deviceName);
     ArduinoOTA.setPassword(OTA_DEVICE_PASSWORD);
 
     ArduinoOTA.onStart([]() {

@@ -1,14 +1,15 @@
 #include "uploader.h"
 #include "../config.h"
+#include "../device_config.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <vector>
 
 bool uploader::wifiConnect() {
-    Serial.printf("[WiFi] Connecting to %s ...", WIFI_SSID);
+    Serial.printf("[WiFi] Connecting to %s ...", g_deviceConfig.wifiSsid);
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(g_deviceConfig.wifiSsid, g_deviceConfig.wifiPassword);
 
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
@@ -71,7 +72,7 @@ int uploader::uploadPhoto(const uint8_t* jpegBuf, size_t jpegLen, const UploadMe
 
     // POST
     HTTPClient http;
-    http.begin(UPLOAD_ENDPOINT);
+    http.begin(g_deviceConfig.uploadEndpoint);
     String contentType = "multipart/form-data; boundary=";
     contentType += boundary;
     http.addHeader("Content-Type", contentType);

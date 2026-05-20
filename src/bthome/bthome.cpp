@@ -1,5 +1,6 @@
 #include "bthome.h"
 #include "../config.h"
+#include "../device_config.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 
@@ -74,7 +75,7 @@ static std::vector<uint8_t> buildServiceData(const BtHomePayload& p) {
 }
 
 void bthome::begin() {
-    NimBLEDevice::init(BTHOME_DEVICE_NAME);
+    NimBLEDevice::init(g_deviceConfig.deviceName);
 }
 
 void bthome::advertise(const BtHomePayload& payload) {
@@ -86,7 +87,7 @@ void bthome::advertise(const BtHomePayload& payload) {
 
     NimBLEAdvertisementData advData;
     advData.setFlags(0x06);  // BR/EDR not supported, LE General Discoverable
-    advData.setName(BTHOME_DEVICE_NAME);
+    advData.setName(g_deviceConfig.deviceName);
     advData.setServiceData(NimBLEUUID((uint16_t)BTHOME_SERVICE_UUID),
                            std::string(reinterpret_cast<const char*>(serviceData.data()),
                                        serviceData.size()));

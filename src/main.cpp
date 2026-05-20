@@ -8,6 +8,7 @@
  *   - NTP sync only on first boot and opportunistically before photo
  *   - State kept in RTC memory (boot-to-boot) and NVS (power-cycle resilient)
  *   - OTA: HTTP manifest check during Wi-Fi session + ArduinoOTA maintenance mode
+ *   - Runtime configuration via NVS + serial CLI (3-second window at boot)
  */
 
 #include <Arduino.h>
@@ -16,9 +17,11 @@
 
 #include "config.h"
 #include "version.h"
+#include "device_config.h"
 #include "persistence.h"
 #include "time_manager.h"
 #include "scheduler.h"
+#include "serial_cli.h"
 
 #include "sensors/ds18b20.h"
 #include "sensors/sht3x.h"
@@ -33,9 +36,8 @@
 //  Sensor reading results (populated per wake)
 // ─────────────────────────────────────────────
 static std::vector<Ds18b20Reading> ds18b20Readings;
-static Sht3xReading     sht3xReading  = {};
-static Ina219Reading    ina219Reading  = {};
-static Lc709203fReading lc709Reading  = {};
+static Sht3xReading  sht3xReading  = {};
+static Ina219Reading ina219Reading = {};
 
 // ─────────────────────────────────────────────
 //  Helpers
@@ -72,14 +74,6 @@ static void runSensorTasks(const TaskFlags& flags) {
         }
     }
 
-    if (flags.readLc709203f) {
-        if (lc709203f::begin()) {
-            lc709Reading = lc709203f::read();
-            rtc.lastLc709203fReadS = time_manager::nowEpoch();
-            anyRead = true;
-        }
-    }
-
     if (!anyRead) return;
 
     // ── Publish over BLE/BTHome ──────────────────
@@ -99,22 +93,13 @@ static void runSensorTasks(const TaskFlags& flags) {
         payload.hasHumidity = true;
     }
 
-    if (lc709Reading.valid) {
-        payload.batteryPercent = (uint8_t)constrain(lc709Reading.batteryPercent, 0, 100);
-        payload.hasBattery     = true;
-        payload.voltage        = lc709Reading.batteryVoltageV;
-        payload.hasVoltage     = true;
-    }
-
     if (ina219Reading.valid) {
+        payload.voltage    = ina219Reading.busVoltageV;
+        payload.hasVoltage = true;
         payload.currentA   = ina219Reading.currentMa / 1000.0f;
         payload.hasCurrent = true;
         payload.powerW     = ina219Reading.powerMw / 1000.0f;
         payload.hasPower   = true;
-        if (!payload.hasVoltage) {
-            payload.voltage    = ina219Reading.busVoltageV;
-            payload.hasVoltage = true;
-        }
     }
 
     bthome::begin();
@@ -139,7 +124,7 @@ static void runPhotoTask() {
     // ── OTA check while Wi-Fi is already connected ───────────────────────
     // checkAndApply() resets the device if a new firmware is flashed,
     // so the lines below are only reached when there is no pending update.
-    if (OTA_ENABLED) {
+    if (g_deviceConfig.otaEnabled) {
         ota::checkAndApply();
     }
 
@@ -163,7 +148,7 @@ static void runPhotoTask() {
 
     // Upload
     UploadMetadata meta = {};
-    meta.deviceId   = BTHOME_DEVICE_NAME;
+    meta.deviceId   = g_deviceConfig.deviceName;
     meta.timestampS = time_manager::nowEpoch();
     meta.latitude   = 0.0f;
     meta.longitude  = 0.0f;
@@ -195,27 +180,32 @@ void setup() {
     Serial.begin(115200);
     delay(200);  // settle USB CDC
 
-    Serial.printf("\n\n=== Boot #%u  fw:%s ===\n",
-                  getRtcState().bootCount + 1, FIRMWARE_VERSION);
+    // ── Load runtime configuration from NVS (must be first) ─────────────
+    device_config::load();
 
-    // Open NVS early – needed by ota::isMaintenanceModeRequested()
+    Serial.printf("\n\n=== Boot #%u  fw:%s  dev:%s ===\n",
+                  getRtcState().bootCount + 1, FIRMWARE_VERSION,
+                  g_deviceConfig.deviceName);
+
+    // ── Serial CLI config window (3 s) ───────────────────────────────────
+    // Press any key in a terminal at 115200 baud to open the config menu.
+    serial_cli::offerConfigWindow(3000);
+
+    // ── Open runtime NVS namespace ───────────────────────────────────────
     nvs::begin();
 
-    // ── Maintenance mode check (before anything else) ────────────────────
-    // Triggered by holding OTA_MAINTENANCE_GPIO low at boot, or by a NVS flag
-    // set remotely (e.g. via a Home Assistant automation).
+    // ── Maintenance mode check ───────────────────────────────────────────
+    // Triggered by holding OTA_MAINTENANCE_GPIO low at boot, or by a NVS flag.
     if (ota::isMaintenanceModeRequested()) {
         Serial.println("[MAIN] Maintenance mode requested – entering ArduinoOTA standby");
         ota::enterMaintenanceMode(OTA_MAINTENANCE_TIMEOUT_MS);
-        // Returns after timeout or after a successful OTA (which resets the device).
-        // Fall through to normal operation if no update was pushed.
+        // Falls through if no OTA push arrives within the timeout.
     }
 
-    // Restore / estimate current time from RTC memory + NVS
+    // ── Time init ────────────────────────────────────────────────────────
     bool timeOk = time_manager::init();
 
     if (!timeOk) {
-        // First boot or stale time – perform NTP sync
         Serial.println("[MAIN] Time not trusted – syncing NTP...");
         if (uploader::wifiConnect()) {
             time_manager::syncNtp();
@@ -225,25 +215,24 @@ void setup() {
         }
     }
 
-    // Initialise I2C for sensors
+    // ── I2C init for sensors ─────────────────────────────────────────────
     initI2C();
 
-    // Determine which tasks are due
+    // ── Determine which tasks are due ────────────────────────────────────
     TaskFlags flags = scheduler::evaluate();
 
-    Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d LC709=%d Photo=%d\n",
-                  flags.readDs18b20, flags.readSht3x, flags.readIna219,
-                  flags.readLc709203f, flags.takePhoto);
+    Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d Photo=%d\n",
+                  flags.readDs18b20, flags.readSht3x, flags.readIna219, flags.takePhoto);
 
-    // Run sensor tasks (publishes via BTHome BLE)
+    // ── Run sensor tasks (publishes via BTHome BLE) ───────────────────────
     runSensorTasks(flags);
 
-    // Run photo task (uses WiFi, camera) + OTA check during the same Wi-Fi session
+    // ── Run photo task (uses WiFi + camera) ──────────────────────────────
     if (flags.takePhoto) {
         runPhotoTask();
     }
 
-    // Compute next wake interval and sleep
+    // ── Sleep until next event ───────────────────────────────────────────
     uint32_t sleepSecs = scheduler::nextSleepSeconds(flags);
     scheduler::deepSleep(sleepSecs);  // does not return
 }
@@ -251,3 +240,4 @@ void setup() {
 void loop() {
     // Never reached – firmware runs in setup() and returns to deep sleep
 }
+

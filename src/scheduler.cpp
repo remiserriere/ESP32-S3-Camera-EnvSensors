@@ -1,5 +1,6 @@
 #include "scheduler.h"
 #include "config.h"
+#include "device_config.h"
 #include "persistence.h"
 #include "time_manager.h"
 #include <Arduino.h>
@@ -27,9 +28,12 @@ TaskFlags scheduler::evaluate() {
     TaskFlags flags = {};
     RtcState& rtc   = getRtcState();
 
-    flags.readDs18b20   = isDue(rtc.lastDs18b20ReadS, DS18B20_INTERVAL_MIN);
-    flags.readSht3x     = isDue(rtc.lastSht3xReadS,   SHT3X_INTERVAL_MIN);
-    flags.readIna219    = INA219_ENABLED && isDue(rtc.lastIna219ReadS, INA219_INTERVAL_MIN);
+    flags.readDs18b20 = g_deviceConfig.ds18b20Enabled
+                        && isDue(rtc.lastDs18b20ReadS, g_deviceConfig.ds18b20IntervalMin);
+    flags.readSht3x   = g_deviceConfig.sht3xEnabled
+                        && isDue(rtc.lastSht3xReadS,   g_deviceConfig.sht3xIntervalMin);
+    flags.readIna219  = g_deviceConfig.ina219Enabled
+                        && isDue(rtc.lastIna219ReadS,  g_deviceConfig.ina219IntervalMin);
 
     // Photo: due if we haven't taken one today AND we are in/past the target window
     if (time_manager::isTrusted()) {
@@ -41,8 +45,8 @@ TaskFlags scheduler::evaluate() {
 
         if (!sameDay) {
             int currentMinutes = now_tm.tm_hour * 60 + now_tm.tm_min;
-            int targetMinutes  = PHOTO_HOUR * 60 + PHOTO_MINUTE;
-            int windowEnd      = targetMinutes + PHOTO_WINDOW_MIN;
+            int targetMinutes  = g_deviceConfig.photoHour * 60 + g_deviceConfig.photoMinute;
+            int windowEnd      = targetMinutes + g_deviceConfig.photoWindowMin;
 
             flags.takePhoto = (currentMinutes >= targetMinutes && currentMinutes < windowEnd);
         }
@@ -59,19 +63,19 @@ uint32_t scheduler::nextSleepSeconds(const TaskFlags& completed) {
         if (s < minSleep) minSleep = s;
     };
 
-    consider(secondsUntilDue(rtc.lastDs18b20ReadS, DS18B20_INTERVAL_MIN));
-    consider(secondsUntilDue(rtc.lastSht3xReadS,   SHT3X_INTERVAL_MIN));
-
-    if (INA219_ENABLED) {
-        consider(secondsUntilDue(rtc.lastIna219ReadS, INA219_INTERVAL_MIN));
-    }
+    if (g_deviceConfig.ds18b20Enabled)
+        consider(secondsUntilDue(rtc.lastDs18b20ReadS, g_deviceConfig.ds18b20IntervalMin));
+    if (g_deviceConfig.sht3xEnabled)
+        consider(secondsUntilDue(rtc.lastSht3xReadS,   g_deviceConfig.sht3xIntervalMin));
+    if (g_deviceConfig.ina219Enabled)
+        consider(secondsUntilDue(rtc.lastIna219ReadS,  g_deviceConfig.ina219IntervalMin));
 
     // Also consider the upcoming photo window
     if (time_manager::isTrusted()) {
         struct tm now_tm;
         time_manager::nowLocal(now_tm);
         int currentMinutes = now_tm.tm_hour * 60 + now_tm.tm_min;
-        int targetMinutes  = PHOTO_HOUR * 60 + PHOTO_MINUTE;
+        int targetMinutes  = g_deviceConfig.photoHour * 60 + g_deviceConfig.photoMinute;
 
         int minutesToPhoto;
         if (currentMinutes < targetMinutes) {

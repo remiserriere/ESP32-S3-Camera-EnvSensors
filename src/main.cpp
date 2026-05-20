@@ -31,6 +31,7 @@
 #include "camera/camera_module.h"
 #include "uploader/uploader.h"
 #include "ota/ota.h"
+#include "mqtt_config/mqtt_config.h"
 
 // ─────────────────────────────────────────────
 //  Sensor reading results (populated per wake)
@@ -127,6 +128,11 @@ static void runPhotoTask() {
     if (g_deviceConfig.otaEnabled) {
         ota::checkAndApply();
     }
+
+    // ── MQTT config sync ─────────────────────────────────────────────────
+    // Subscribe to retained config topic; apply any overrides to NVS.
+    // No-op if mqttEnabled is false or broker is not set.
+    mqtt_config::syncFromBroker();
 
     // Capture
     if (!camera_module::begin()) {

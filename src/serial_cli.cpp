@@ -142,6 +142,27 @@ static void menuOta() {
         promptStr("URL manifest OTA", g_deviceConfig.otaManifestUrl, sizeof(g_deviceConfig.otaManifestUrl));
 }
 
+static void menuMqtt() {
+    Serial.println(F("\n── MQTT (config à distance) ───────────────────────────────"));
+    g_deviceConfig.mqttEnabled = promptBool("MQTT activé", g_deviceConfig.mqttEnabled);
+    if (g_deviceConfig.mqttEnabled) {
+        promptStr("Broker (IP ou hostname)",  g_deviceConfig.mqttBroker,    sizeof(g_deviceConfig.mqttBroker));
+
+        // Port – special-case: it's uint16_t, not uint8_t
+        Serial.printf("  Port MQTT [%u] (1-65535, Enter=keep): ", g_deviceConfig.mqttPort);
+        String s = readLine(); s.trim();
+        if (!s.isEmpty()) {
+            int v = s.toInt();
+            if (v >= 1 && v <= 65535) g_deviceConfig.mqttPort = (uint16_t)v;
+            else Serial.printf("  ! Hors plage – port conservé (%u)\n", g_deviceConfig.mqttPort);
+        }
+
+        promptStr("Utilisateur MQTT (vide=aucun)", g_deviceConfig.mqttUser, sizeof(g_deviceConfig.mqttUser));
+        promptStr("Mot de passe MQTT",             g_deviceConfig.mqttPassword, sizeof(g_deviceConfig.mqttPassword), true);
+        promptStr("Client ID MQTT",                g_deviceConfig.mqttClientId, sizeof(g_deviceConfig.mqttClientId));
+    }
+}
+
 static void menuBle() {
     Serial.println(F("\n── BLE ────────────────────────────────────────────────────"));
     promptStr("Nom BLE de l'appareil", g_deviceConfig.deviceName, sizeof(g_deviceConfig.deviceName));
@@ -162,7 +183,8 @@ static void runMenu() {
         Serial.println(F("║  [2]  Planification photo                           ║"));
         Serial.println(F("║  [3]  Réseau (Wi-Fi / endpoint)                     ║"));
         Serial.println(F("║  [4]  OTA                                           ║"));
-        Serial.println(F("║  [5]  Nom BLE                                       ║"));
+        Serial.println(F("║  [5]  MQTT (config à distance)                      ║"));
+        Serial.println(F("║  [6]  Nom BLE                                       ║"));
         Serial.println(F("║  [P]  Afficher la configuration actuelle            ║"));
         Serial.println(F("║  [S]  Sauvegarder et reprendre le boot              ║"));
         Serial.println(F("║  [R]  Réinitialiser aux valeurs par défaut          ║"));
@@ -181,7 +203,8 @@ static void runMenu() {
             case '2': menuPhoto();   dirty = true; break;
             case '3': menuNetwork(); dirty = true; break;
             case '4': menuOta();     dirty = true; break;
-            case '5': menuBle();     dirty = true; break;
+            case '5': menuMqtt();    dirty = true; break;
+            case '6': menuBle();     dirty = true; break;
 
             case 'P':
                 device_config::print();

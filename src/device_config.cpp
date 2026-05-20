@@ -32,6 +32,13 @@ void device_config::resetToDefaults() {
     g_deviceConfig.otaEnabled         = OTA_ENABLED;
     strncpy(g_deviceConfig.otaManifestUrl, OTA_MANIFEST_URL,   sizeof(g_deviceConfig.otaManifestUrl) - 1);
 
+    g_deviceConfig.mqttEnabled        = false;
+    g_deviceConfig.mqttBroker[0]      = '\0';
+    g_deviceConfig.mqttPort           = 1883;
+    g_deviceConfig.mqttUser[0]        = '\0';
+    g_deviceConfig.mqttPassword[0]    = '\0';
+    strncpy(g_deviceConfig.mqttClientId, BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.mqttClientId) - 1);
+
     strncpy(g_deviceConfig.deviceName,     BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.deviceName)     - 1);
 }
 
@@ -71,6 +78,14 @@ void device_config::load() {
 
     g_deviceConfig.otaEnabled         = p.getBool("ota_en",  g_deviceConfig.otaEnabled);
     readStr("ota_url",    g_deviceConfig.otaManifestUrl,  sizeof(g_deviceConfig.otaManifestUrl));
+
+    g_deviceConfig.mqttEnabled        = p.getBool  ("mqtt_en",  g_deviceConfig.mqttEnabled);
+    readStr("mqtt_host",  g_deviceConfig.mqttBroker,    sizeof(g_deviceConfig.mqttBroker));
+    g_deviceConfig.mqttPort           = p.getUShort("mqtt_port", g_deviceConfig.mqttPort);
+    readStr("mqtt_user",  g_deviceConfig.mqttUser,      sizeof(g_deviceConfig.mqttUser));
+    readStr("mqtt_pass",  g_deviceConfig.mqttPassword,  sizeof(g_deviceConfig.mqttPassword));
+    readStr("mqtt_id",    g_deviceConfig.mqttClientId,  sizeof(g_deviceConfig.mqttClientId));
+
     readStr("dev_name",   g_deviceConfig.deviceName,      sizeof(g_deviceConfig.deviceName));
 
     p.end();
@@ -100,6 +115,14 @@ void device_config::save() {
 
     p.putBool  ("ota_en",  g_deviceConfig.otaEnabled);
     p.putString("ota_url", g_deviceConfig.otaManifestUrl);
+
+    p.putBool  ("mqtt_en",   g_deviceConfig.mqttEnabled);
+    p.putString("mqtt_host", g_deviceConfig.mqttBroker);
+    p.putUShort("mqtt_port", g_deviceConfig.mqttPort);
+    p.putString("mqtt_user", g_deviceConfig.mqttUser);
+    p.putString("mqtt_pass", g_deviceConfig.mqttPassword);
+    p.putString("mqtt_id",   g_deviceConfig.mqttClientId);
+
     p.putString("dev_name",g_deviceConfig.deviceName);
 
     p.end();
@@ -125,6 +148,10 @@ void device_config::print() {
     Serial.printf ("│  OTA      : %-8s  %-38s│\n",
                    g_deviceConfig.otaEnabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.otaManifestUrl);
+    Serial.printf ("│  MQTT     : %-8s  %s:%u                            \n",
+                   g_deviceConfig.mqttEnabled ? "ENABLED" : "DISABLED",
+                   g_deviceConfig.mqttBroker,
+                   g_deviceConfig.mqttPort);
     Serial.printf ("│  BLE name : %-47s│\n", g_deviceConfig.deviceName);
     Serial.println(F("└─────────────────────────────────────────────────────────┘"));
 }

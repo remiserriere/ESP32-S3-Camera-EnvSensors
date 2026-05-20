@@ -41,6 +41,14 @@ struct DeviceConfig {
     bool    otaEnabled;             // default: OTA_ENABLED
     char    otaManifestUrl[128];    // default: OTA_MANIFEST_URL
 
+    // ── MQTT (config channel + optional telemetry) ────────────────────────────
+    bool    mqttEnabled;            // default: false  – enable MQTT config sync
+    char    mqttBroker[64];         // default: ""     – broker hostname or IP
+    uint16_t mqttPort;              // default: 1883
+    char    mqttUser[32];           // default: ""     – leave blank if no auth
+    char    mqttPassword[32];       // default: ""
+    char    mqttClientId[32];       // default: deviceName
+
     // ── BLE ──────────────────────────────────────────────────────────────────
     char    deviceName[32];         // default: BTHOME_DEVICE_NAME
 };

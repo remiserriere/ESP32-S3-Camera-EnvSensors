@@ -92,7 +92,9 @@ void bthome::advertise(const BtHomePayload& payload) {
                                        serviceData.size()));
 
     pAdv->setAdvertisementData(advData);
-    pAdv->start(BTHOME_ADV_DURATION_MS / 1000, nullptr);  // duration in seconds for NimBLE
+    // NimBLE start() takes duration in seconds; round up to at least 1 s
+    uint32_t advSeconds = (BTHOME_ADV_DURATION_MS + 999) / 1000;
+    pAdv->start(advSeconds, nullptr);
 
     Serial.printf("[BTHome] Advertising for %d ms (%zu bytes service data)\n",
                   BTHOME_ADV_DURATION_MS, serviceData.size());

@@ -32,16 +32,18 @@ void uploader::wifiDisconnect() {
 }
 
 int uploader::uploadPhoto(const uint8_t* jpegBuf, size_t jpegLen, const UploadMetadata& meta) {
-    // Build JSON metadata string
-    char jsonBuf[256];
+    // Build JSON metadata string (device_id capped at 64 chars; buffer sized for worst case)
+    char jsonBuf[384];
     snprintf(jsonBuf, sizeof(jsonBuf),
-             "{\"device_id\":\"%s\",\"timestamp\":%lld,\"lat\":%.6f,\"lon\":%.6f}",
-             meta.deviceId, (long long)meta.timestampS, meta.latitude, meta.longitude);
+             "{\"device_id\":\"%.64s\",\"timestamp\":%lld,\"lat\":%.6f,\"lon\":%.6f}",
+             meta.deviceId ? meta.deviceId : "", (long long)meta.timestampS,
+             meta.latitude, meta.longitude);
 
     // Build multipart body manually (HTTPClient doesn't have built-in multipart support)
     const char* boundary = "----ESP32Boundary7a3b9c";
+    // Pre-compute header size: boundary(~23) + fixed field headers(~200) + JSON payload
     String body;
-    body.reserve(512);
+    body.reserve(300 + strlen(jsonBuf));
 
     // Part 1: JSON metadata
     body += "--";  body += boundary; body += "\r\n";

@@ -23,7 +23,6 @@
 #include "sensors/ds18b20.h"
 #include "sensors/sht3x.h"
 #include "sensors/ina219.h"
-#include "sensors/lc709203f.h"
 
 #include "bthome/bthome.h"
 #include "camera/camera_module.h"

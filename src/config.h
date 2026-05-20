@@ -39,15 +39,6 @@
 #define INA219_ENABLED         true     // set false if not connected
 
 // ─────────────────────────────────────────────
-//  LC709203F (I2C – LiPo battery gauge)
-// ─────────────────────────────────────────────
-#define LC709203F_I2C_ADDR     0x0B     // fixed address
-#define LC709203F_INTERVAL_MIN 5        // Read every N minutes
-#define LC709203F_ENABLED      true     // set false if not connected
-// Battery pack capacity in mAh – required for LC709203F calibration
-#define LC709203F_APA          0x30     // APA value for ~3000 mAh pack; see datasheet table
-
-// ─────────────────────────────────────────────
 //  I2C Bus
 // ─────────────────────────────────────────────
 #define I2C_SDA_PIN            3        // TODO: verify against Freenove pinout

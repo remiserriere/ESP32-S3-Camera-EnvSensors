@@ -27,10 +27,9 @@ TaskFlags scheduler::evaluate() {
     TaskFlags flags = {};
     RtcState& rtc   = getRtcState();
 
-    flags.readDs18b20   = isDue(rtc.lastDs18b20ReadS,   DS18B20_INTERVAL_MIN);
-    flags.readSht3x     = isDue(rtc.lastSht3xReadS,     SHT3X_INTERVAL_MIN);
-    flags.readIna219    = INA219_ENABLED   && isDue(rtc.lastIna219ReadS,    INA219_INTERVAL_MIN);
-    flags.readLc709203f = LC709203F_ENABLED && isDue(rtc.lastLc709203fReadS, LC709203F_INTERVAL_MIN);
+    flags.readDs18b20   = isDue(rtc.lastDs18b20ReadS, DS18B20_INTERVAL_MIN);
+    flags.readSht3x     = isDue(rtc.lastSht3xReadS,   SHT3X_INTERVAL_MIN);
+    flags.readIna219    = INA219_ENABLED && isDue(rtc.lastIna219ReadS, INA219_INTERVAL_MIN);
 
     // Photo: due if we haven't taken one today AND we are in/past the target window
     if (time_manager::isTrusted()) {
@@ -60,15 +59,11 @@ uint32_t scheduler::nextSleepSeconds(const TaskFlags& completed) {
         if (s < minSleep) minSleep = s;
     };
 
-    consider(secondsUntilDue(rtc.lastDs18b20ReadS,   DS18B20_INTERVAL_MIN));
-    consider(secondsUntilDue(rtc.lastSht3xReadS,     SHT3X_INTERVAL_MIN));
+    consider(secondsUntilDue(rtc.lastDs18b20ReadS, DS18B20_INTERVAL_MIN));
+    consider(secondsUntilDue(rtc.lastSht3xReadS,   SHT3X_INTERVAL_MIN));
 
     if (INA219_ENABLED) {
         consider(secondsUntilDue(rtc.lastIna219ReadS, INA219_INTERVAL_MIN));
-    }
-
-    if (LC709203F_ENABLED) {
-        consider(secondsUntilDue(rtc.lastLc709203fReadS, LC709203F_INTERVAL_MIN));
     }
 
     // Also consider the upcoming photo window

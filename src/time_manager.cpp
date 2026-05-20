@@ -21,7 +21,6 @@ bool time_manager::init() {
         rtc.lastDs18b20ReadS   = 0;
         rtc.lastSht3xReadS     = 0;
         rtc.lastIna219ReadS    = 0;
-        rtc.lastLc709203fReadS = 0;
         rtc.photoRetryCount    = 0;
         nvs::loadLastPhoto(rtc.lastPhotoYear, rtc.lastPhotoDayOfYear);
     }

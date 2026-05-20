@@ -6,7 +6,6 @@ struct TaskFlags {
     bool readDs18b20;
     bool readSht3x;
     bool readIna219;
-    bool readLc709203f;
     bool takePhoto;
 };
 

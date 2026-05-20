@@ -15,7 +15,6 @@ struct RtcState {
     int64_t  lastDs18b20ReadS;
     int64_t  lastSht3xReadS;
     int64_t  lastIna219ReadS;
-    int64_t  lastLc709203fReadS;
 
     // Photo tracking
     int32_t  lastPhotoDayOfYear;     // yday of last successful photo (-1 = never)

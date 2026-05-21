@@ -1,0 +1,68 @@
+name: CI – Build Firmware
+
+on:
+  push:
+    branches: [ main, develop, 'feature/**', 'fix/**' ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so that git describe --tags works for version injection
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/cache
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Get short SHA
+        id: sha
+        run: echo "SHORT_SHA=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Build firmware
+        run: pio run
+        env:
+          # Use short SHA for a concise, still-traceable CI version identifier
+          FIRMWARE_VERSION: ci-${{ steps.sha.outputs.SHORT_SHA }}
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-ci-${{ github.sha }}
+          path: |
+            .pio/build/freenove_esp32s3/firmware.bin
+            .pio/build/freenove_esp32s3/firmware.elf
+          retention-days: 7
+          if-no-files-found: error

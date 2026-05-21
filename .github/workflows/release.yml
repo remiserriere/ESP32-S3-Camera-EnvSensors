@@ -1,0 +1,105 @@
+name: Release – Build & Publish Firmware
+
+# Triggered by pushing a semantic version tag, e.g.:
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# The workflow will:
+#   1. Build the firmware with the version embedded
+#   2. Generate an OTA manifest (manifest.json)
+#   3. Create a GitHub Release and attach the .bin, .elf, and manifest
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: write   # needed to create GitHub Releases and upload assets
+
+jobs:
+  build-and-release:
+    name: Build & release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.platformio/cache
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build firmware
+        run: pio run
+        env:
+          FIRMWARE_VERSION: ${{ github.ref_name }}
+
+      # ── Prepare release assets ──────────────────────────────────────────
+      - name: Prepare release assets
+        run: |
+          mkdir -p release_assets
+
+          TAG="${{ github.ref_name }}"
+          BIN=".pio/build/freenove_esp32s3/firmware.bin"
+          ELF=".pio/build/freenove_esp32s3/firmware.elf"
+
+          cp "$BIN" "release_assets/firmware-${TAG}.bin"
+          cp "$ELF" "release_assets/firmware-${TAG}.elf"
+
+          # OTA manifest – points at the asset URL that GitHub will create
+          # after the release is published.
+          REPO="${{ github.repository }}"
+          BINARY_URL="https://github.com/${REPO}/releases/download/${TAG}/firmware-${TAG}.bin"
+
+          cat > release_assets/manifest.json <<EOF
+          {
+            "version": "${TAG}",
+            "url": "${BINARY_URL}",
+            "notes": "See release notes on GitHub"
+          }
+          EOF
+
+          echo "=== Release assets ==="
+          ls -lh release_assets/
+
+      # ── Determine pre-release flag ──────────────────────────────────────
+      - name: Detect pre-release
+        id: prerelease
+        run: |
+          TAG="${{ github.ref_name }}"
+          if echo "$TAG" | grep -qE '-(alpha|beta|rc)'; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Create GitHub Release ───────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.flag }}
+          files: |
+            release_assets/firmware-${{ github.ref_name }}.bin
+            release_assets/firmware-${{ github.ref_name }}.elf
+            release_assets/manifest.json

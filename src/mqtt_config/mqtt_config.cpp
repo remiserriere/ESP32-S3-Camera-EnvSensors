@@ -10,7 +10,6 @@
 //  Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr uint32_t MQTT_CONNECT_TIMEOUT_MS = 8000;
 static constexpr uint32_t MQTT_CONFIG_TIMEOUT_MS  = 5000;  // wait for retained msg
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,15 +67,6 @@ static bool jsonBool(const String& json, const char* key, bool defaultVal) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Apply incoming JSON config payload to g_deviceConfig
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Copy a JSON string field into a fixed-size char buffer (no-op if key absent).
-static void applyStr(const String& json, const char* key, char* buf, size_t maxLen) {
-    String val = jsonStr(json, key);
-    if (!val.isEmpty()) {
-        strncpy(buf, val.c_str(), maxLen - 1);
-        buf[maxLen - 1] = '\0';
-    }
-}
 
 static bool applyConfig(const String& json) {
     bool changed = false;

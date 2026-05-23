@@ -590,7 +590,7 @@ async function runSimulation() {
     const resp = await fetch('/api/calibration/simulate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({config: JSON.stringify(cal)}),
+      body: JSON.stringify({config: JSON.stringify(cal), method: document.getElementById('detect-method').value}),
     });
     const data = await resp.json();
     if (!resp.ok) {

@@ -199,16 +199,15 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         the K8s restart policy) will bring the service back automatically.
         """
         def _do_exit() -> None:
+            import os as _os
             import time
             time.sleep(0.4)
-            # Shut down the thread pool cleanly, then exit via sys.exit so that
-            # atexit handlers (including thread pool shutdown) run normally.
-            try:
-                analyzer_pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
-            import sys
-            sys.exit(0)
+            # os._exit() terminates the whole process from any thread.
+            # sys.exit() would only raise SystemExit in this daemon thread and
+            # leave the main process running with a dead thread-pool, causing
+            # every subsequent /upload to fail with "cannot schedule new futures
+            # after shutdown".
+            _os._exit(0)
 
         t = threading.Thread(target=_do_exit, daemon=True, name="reboot-trigger")
         t.start()

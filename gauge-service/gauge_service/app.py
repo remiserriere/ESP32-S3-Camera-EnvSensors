@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,32 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     @app.get("/health")
     def health() -> Any:
         return jsonify({"status": "ok"})
+
+    @app.post("/api/reboot")
+    def reboot() -> Any:
+        """Gracefully exit the process so Docker / K8s can restart it.
+
+        The response is sent first; the process is terminated in a daemon thread
+        after a short delay so the HTTP response has time to reach the client.
+        The container restart policy (``restart: unless-stopped`` in Compose, or
+        the K8s restart policy) will bring the service back automatically.
+        """
+        def _do_exit() -> None:
+            import time
+            time.sleep(0.4)
+            # Shut down the thread pool cleanly, then exit via sys.exit so that
+            # atexit handlers (including thread pool shutdown) run normally.
+            try:
+                analyzer_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            import sys
+            sys.exit(0)
+
+        t = threading.Thread(target=_do_exit, daemon=True, name="reboot-trigger")
+        t.start()
+        app.logger.info("Reboot requested via /api/reboot — exiting in 400 ms")
+        return jsonify({"status": "restarting"}), 200
 
     @app.get("/api/latest")
     def api_latest() -> Any:

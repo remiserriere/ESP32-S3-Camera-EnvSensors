@@ -32,15 +32,42 @@
     .status-ok { color: #34d399; font-weight: bold; }
     .status-warn { color: #fbbf24; font-weight: bold; }
     .status-err { color: #f87171; font-weight: bold; }
-    .cal-banner { padding: .6rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .93rem; }
-    .cal-banner.ok { background: #064e3b; border: 1px solid #065f46; }
-    .cal-banner.err { background: #450a0a; border: 1px solid #7f1d1d; }
+    .btn-danger { background: #7f1d1d; border-color: #b91c1c; color: #fecaca; }
+    .btn-danger:hover { background: #991b1b; }
+    #reboot-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.75); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #reboot-overlay.show { display: flex; }
+    #reboot-box {
+      background: #1f2937; border: 1px solid #374151; border-radius: 12px;
+      padding: 2rem 2.5rem; text-align: center; max-width: 380px;
+    }
+    .spinner {
+      display: inline-block; width: 2rem; height: 2rem;
+      border: 3px solid #374151; border-top-color: #60a5fa;
+      border-radius: 50%; animation: spin .8s linear infinite;
+      margin-bottom: 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+
+<!-- Reboot overlay (shown while service is restarting) -->
+<div id="reboot-overlay">
+  <div id="reboot-box">
+    <div class="spinner"></div>
+    <p id="reboot-msg" style="font-size:1.05rem;margin:.5rem 0 1.5rem;">Restarting service…</p>
+    <p class="muted" style="font-size:.85rem;">The page will reload automatically when the service is back online.</p>
+  </div>
+</div>
+
   <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem;">
     <h1 style="margin:0;">{{ config.device_name }}</h1>
     <a href="/setup" class="btn btn-setup">⚙️ Setup / Calibration</a>
+    <button class="btn btn-danger" onclick="rebootService()">🔄 Reboot service</button>
   </div>
 
   {% if calibration_configured %}
@@ -143,6 +170,29 @@
         btn.textContent = '🔍 Hide debug overlay';
         btn.classList.add('active');
       }
+    }
+
+    async function rebootService() {
+      if (!confirm('Reboot the gauge service?\n\nThe container will exit and restart automatically (Docker / K8s restart policy).')) return;
+      const overlay = document.getElementById('reboot-overlay');
+      const msg     = document.getElementById('reboot-msg');
+      overlay.classList.add('show');
+      msg.textContent = 'Sending reboot command…';
+      try {
+        await fetch('/api/reboot', {method: 'POST'});
+      } catch (_) { /* connection may close before response — that's fine */ }
+      msg.textContent = 'Restarting service…';
+      // Poll /health until the service responds again, then reload
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch('/health?t=' + Date.now(), {cache: 'no-store'});
+          if (r.ok) {
+            clearInterval(poll);
+            msg.textContent = '✅ Service is back — reloading…';
+            setTimeout(() => window.location.reload(), 800);
+          }
+        } catch (_) { /* still restarting */ }
+      }, 1500);
     }
   </script>
 </body>

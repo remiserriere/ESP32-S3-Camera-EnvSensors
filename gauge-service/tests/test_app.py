@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from gauge_service.app import create_app
 from gauge_service.calibration import GaugeCalibration, CircleParams, PatchRegion, TickMark
@@ -145,6 +146,40 @@ def test_index_page_renders(tmp_path: Path) -> None:
     page = client.get('/')
     assert page.status_code == 200
     assert b'Setup' in page.data
+    assert b'Reboot' in page.data
+
+
+def test_index_page_has_reboot_button(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    app = create_app(config)
+    client = app.test_client()
+
+    page = client.get('/')
+    assert b'rebootService' in page.data
+    assert b'/api/reboot' in page.data
+
+
+def test_reboot_endpoint_returns_200(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /api/reboot should return 200 without actually calling sys.exit."""
+    import threading as _threading
+
+    exited: list[bool] = []
+
+    def _patched_start(self):
+        # Don't start the exit thread in the test; just record that it was triggered
+        exited.append(True)
+
+    monkeypatch.setattr(_threading.Thread, 'start', _patched_start)
+
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post('/api/reboot')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['status'] == 'restarting'
+    assert exited  # the exit thread was triggered
 
 
 def test_setup_page_renders(tmp_path: Path) -> None:

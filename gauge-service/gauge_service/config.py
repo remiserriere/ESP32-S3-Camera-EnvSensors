@@ -31,6 +31,8 @@ _FIELD_ENV_MAP: dict[str, str] = {
     "max_delta_percent":               "MAX_DELTA_PERCENT",
     "upload_debug_mode":               "UPLOAD_DEBUG_MODE",
     "needle_detection_method":         "NEEDLE_DETECTION_METHOD",
+    "ota_mode":                        "OTA_MODE",
+    "github_repo":                     "GITHUB_REPO",
 }
 
 # Fields whose change requires a service reboot to take effect.
@@ -139,6 +141,17 @@ class ServiceConfig:
     # "hsv_color"    → HSV saturation sweep (best for coloured needles).
     # "radial_sweep" → variance-based sweep (generic fallback).
     needle_detection_method: str = "auto"
+    # OTA firmware update mode served to the ESP32 device.
+    # "disabled"     → /api/ota/manifest returns 404 (default).
+    # "github_auto"  → manifest generated live from GitHub Releases API;
+    #                   ESP32 downloads directly from GitHub.
+    # "service_auto" → service downloads & caches the binary from GitHub;
+    #                   ESP32 downloads from this service.
+    # "manual"       → a user-uploaded binary is served by this service.
+    ota_mode: str = "disabled"
+    # GitHub repository used for github_auto and service_auto OTA modes.
+    # Format: "owner/repo", e.g. "remiserriere/ESP32-S3-Camera-EnvSensors".
+    github_repo: str = ""
 
     # ------------------------------------------------------------------
     # Factories
@@ -191,6 +204,8 @@ class ServiceConfig:
             max_delta_percent=r.float_("MAX_DELTA_PERCENT", "max_delta_percent", "max_delta_percent", 0.0),
             upload_debug_mode=r.bool_("UPLOAD_DEBUG_MODE", "upload_debug_mode", "upload_debug_mode", False),
             needle_detection_method=r.needle_method("NEEDLE_DETECTION_METHOD", "needle_detection_method", "needle_detection_method", "auto"),
+            ota_mode=r.str("OTA_MODE", "ota_mode", "ota_mode", "disabled"),
+            github_repo=r.str("GITHUB_REPO", "github_repo", "github_repo", ""),
         )
         return instance
 
@@ -221,6 +236,8 @@ class ServiceConfig:
             "max_delta_percent":               self.max_delta_percent,
             "upload_debug_mode":               self.upload_debug_mode,
             "needle_detection_method":         self.needle_detection_method,
+            "ota_mode":                        self.ota_mode,
+            "github_repo":                     self.github_repo,
         }
 
     def to_json(self) -> str:

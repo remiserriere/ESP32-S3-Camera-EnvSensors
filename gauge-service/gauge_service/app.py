@@ -15,7 +15,24 @@ _RECORD_ID_RE = re.compile(r'^\d{8}T\d{12}Z$')
 from .analyzer import GaugeReader
 from .calibration import GaugeCalibration
 from .config import ServiceConfig, _FIELD_ENV_MAP, _FIELDS_NEED_REBOOT, _VALID_NEEDLE_METHODS
+from .device_config_manager import (
+    DeviceConfigPayload,
+    load_device_config,
+    publish_device_config,
+    save_device_config,
+)
 from .mqtt import MqttPublisher
+from .ota_manager import (
+    OTA_MODES,
+    OtaConfig,
+    fetch_and_cache_firmware,
+    generate_manifest,
+    get_firmware_path,
+    load_ota_config,
+    ota_status,
+    save_manual_firmware,
+    save_ota_config,
+)
 from .storage import StorageManager
 
 
@@ -179,6 +196,21 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             config=service_config,
             env_overrides=service_config.env_overrides(),
             fields_need_reboot=_FIELDS_NEED_REBOOT,
+            ota_modes=OTA_MODES,
+        )
+
+    @app.get("/device")
+    def device_page() -> str:
+        device_cfg = load_device_config(service_config.data_dir)
+        ota_cfg = load_ota_config(service_config.data_dir)
+        status = ota_status(service_config.data_dir, ota_cfg)
+        return render_template(
+            "device.html",
+            config=service_config,
+            device_cfg=device_cfg,
+            ota_cfg=ota_cfg,
+            ota_modes=OTA_MODES,
+            ota_status=status,
         )
 
     # ------------------------------------------------------------------
@@ -428,6 +460,221 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             "image_url": latest["image_url"],
             "received_at": latest["received_at"],
         })
+
+    # ------------------------------------------------------------------
+    # Device config API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/device-config")
+    def get_device_config() -> Any:
+        """Return the stored device config payload."""
+        device_cfg = load_device_config(service_config.data_dir)
+        return jsonify(device_cfg.to_dict())
+
+    @app.post("/api/device-config")
+    def save_device_config_route() -> Any:
+        """Save device config; optionally publish to MQTT with retain."""
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+        try:
+            device_cfg = DeviceConfigPayload.from_dict(body)
+        except Exception as exc:
+            app.logger.debug("Invalid device config payload: %s", exc)
+            return jsonify({"error": "Invalid payload — check field types and names"}), 400
+
+        try:
+            save_device_config(service_config.data_dir, device_cfg)
+        except Exception as exc:
+            app.logger.error("Failed to save device config: %s", exc)
+            return jsonify({"error": "Failed to persist device config"}), 500
+
+        published = False
+        publish_error: str | None = None
+        if body.get("push_to_device", False):
+            try:
+                publish_device_config(service_config, device_cfg)
+                published = True
+            except Exception as exc:
+                app.logger.warning("MQTT publish for device config failed: %s", exc)
+                publish_error = "MQTT publish failed — check broker settings"
+
+        return jsonify({
+            "ok": True,
+            "published": published,
+            "publish_error": publish_error,
+        })
+
+    @app.post("/api/device-config/publish")
+    def publish_device_config_route() -> Any:
+        """Publish the stored device config to MQTT with retain (no body required)."""
+        device_cfg = load_device_config(service_config.data_dir)
+        try:
+            publish_device_config(service_config, device_cfg)
+        except Exception as exc:
+            app.logger.warning("MQTT publish for device config failed: %s", exc)
+            return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
+        return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
+
+    # ------------------------------------------------------------------
+    # OTA management API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/ota/status")
+    def get_ota_status() -> Any:
+        ota_cfg = load_ota_config(service_config.data_dir)
+        return jsonify(ota_status(service_config.data_dir, ota_cfg))
+
+    @app.get("/api/ota/config")
+    def get_ota_config() -> Any:
+        ota_cfg = load_ota_config(service_config.data_dir)
+        return jsonify(ota_cfg.to_dict())
+
+    @app.post("/api/ota/config")
+    def save_ota_config_route() -> Any:
+        """Save OTA configuration (mode, github_repo, version strings…)."""
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+        mode = body.get("mode", "disabled")
+        if mode not in OTA_MODES:
+            return jsonify({"error": f"mode must be one of {OTA_MODES}"}), 422
+
+        ota_cfg = load_ota_config(service_config.data_dir)
+        ota_cfg.mode = mode
+        if "github_repo" in body:
+            ota_cfg.github_repo = str(body["github_repo"]).strip()
+        if "manual_version" in body:
+            ota_cfg.manual_version = str(body["manual_version"]).strip()
+        if "manual_notes" in body:
+            ota_cfg.manual_notes = str(body["manual_notes"]).strip()
+
+        try:
+            save_ota_config(service_config.data_dir, ota_cfg)
+        except Exception as exc:
+            app.logger.error("Failed to save OTA config: %s", exc)
+            return jsonify({"error": "Failed to persist OTA config"}), 500
+
+        # Mirror ota_mode / github_repo into service config for the /config page
+        service_config.ota_mode = mode
+        service_config.github_repo = ota_cfg.github_repo
+
+        return jsonify({"ok": True, "config": ota_cfg.to_dict()})
+
+    @app.get("/api/ota/manifest")
+    def get_ota_manifest() -> Any:
+        """Return the OTA manifest JSON that the ESP32 polls.
+
+        The ESP32's OTA_MANIFEST_URL should point to this endpoint.
+        Returns 404 when OTA is disabled or no firmware is available.
+        """
+        ota_cfg = load_ota_config(service_config.data_dir)
+        # Build absolute base URL from the incoming request
+        base_url = request.root_url.rstrip("/")
+        try:
+            manifest = generate_manifest(service_config.data_dir, ota_cfg, base_url)
+        except Exception as exc:
+            app.logger.error("OTA manifest generation failed: %s", exc)
+            return jsonify({"error": "Manifest generation failed — check OTA mode and GitHub repo settings"}), 502
+
+        if manifest is None:
+            return jsonify({"error": "OTA is disabled or no firmware available"}), 404
+
+        return Response(
+            json.dumps(manifest),
+            status=200,
+            mimetype="application/json",
+        )
+
+    @app.post("/api/ota/fetch")
+    def ota_fetch_firmware() -> Any:
+        """Fetch the latest firmware from GitHub and cache it locally.
+
+        Only valid when mode is ``service_auto``.
+        """
+        ota_cfg = load_ota_config(service_config.data_dir)
+        if ota_cfg.mode != "service_auto":
+            return jsonify({"error": "OTA mode must be 'service_auto' to fetch firmware"}), 409
+        if not ota_cfg.github_repo:
+            return jsonify({"error": "github_repo is not configured"}), 422
+
+        try:
+            meta = fetch_and_cache_firmware(service_config.data_dir, ota_cfg)
+        except Exception as exc:
+            app.logger.error("Failed to fetch firmware from GitHub: %s", exc)
+            return jsonify({"error": "Firmware fetch failed — check GitHub repo and network connectivity"}), 502
+
+        # Persist cached version to OTA config
+        ota_cfg.cached_version = meta["version"]
+        ota_cfg.cached_notes = (meta.get("notes") or "")[:200]
+        save_ota_config(service_config.data_dir, ota_cfg)
+
+        return jsonify({"ok": True, "version": meta["version"], "size": meta["size"]})
+
+    @app.post("/api/ota/upload")
+    def ota_upload_firmware() -> Any:
+        """Accept a manually-uploaded firmware .bin file.
+
+        Form fields:
+          - ``firmware``: the .bin file (multipart/form-data)
+          - ``version``:  version string for the manifest (e.g. ``v2.0.0``)
+          - ``notes``:    optional release notes (plain text)
+
+        The ESP32's OTA logic compares the manifest version against its own
+        FIRMWARE_VERSION.  If both strings cannot be parsed as semver, simple
+        string inequality is used — so any version different from the device's
+        current firmware will trigger an update.  Use ``99.99.99`` to force a
+        re-flash regardless of the current version.
+        """
+        ota_cfg = load_ota_config(service_config.data_dir)
+        if ota_cfg.mode != "manual":
+            return jsonify({"error": "OTA mode must be 'manual' to upload firmware"}), 409
+
+        fw_file = request.files.get("firmware")
+        if fw_file is None:
+            return jsonify({"error": "Missing 'firmware' file field"}), 400
+
+        version = (request.form.get("version") or "").strip()
+        if not version:
+            return jsonify({"error": "Missing 'version' form field"}), 400
+
+        notes = (request.form.get("notes") or "").strip()
+        file_bytes = fw_file.read()
+        if not file_bytes:
+            return jsonify({"error": "Uploaded file is empty"}), 400
+
+        try:
+            meta = save_manual_firmware(service_config.data_dir, file_bytes, version, notes)
+        except Exception as exc:
+            app.logger.error("Failed to save manual firmware: %s", exc)
+            return jsonify({"error": "Failed to store firmware file"}), 500
+
+        # Persist version/notes to OTA config
+        ota_cfg.manual_version = version
+        ota_cfg.manual_notes = notes[:200]
+        save_ota_config(service_config.data_dir, ota_cfg)
+
+        return jsonify({"ok": True, "version": version, "size": meta["size"]})
+
+    @app.get("/api/ota/firmware")
+    def serve_ota_firmware() -> Any:
+        """Serve the cached or manually-uploaded firmware binary."""
+        ota_cfg = load_ota_config(service_config.data_dir)
+        fw_path = get_firmware_path(service_config.data_dir, ota_cfg)
+        if fw_path is None:
+            return jsonify({"error": "No firmware available"}), 404
+
+        return Response(
+            fw_path.read_bytes(),
+            status=200,
+            mimetype="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename={fw_path.name}",
+                "Content-Length": str(fw_path.stat().st_size),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Debug image

@@ -138,8 +138,10 @@ def publish_device_config(
         client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
 
     client.connect(service_config.mqtt_host, service_config.mqtt_port, 30)
-    result = client.publish(topic, json_payload, retain=True)
-    client.disconnect()
+    try:
+        result = client.publish(topic, json_payload, retain=True)
+    finally:
+        client.disconnect()
 
     if result.rc != 0:
         raise RuntimeError(f"MQTT publish failed with code {result.rc}")

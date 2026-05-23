@@ -129,7 +129,11 @@ def fetch_latest_github_release(github_repo: str) -> dict:
     notes = release.get("body", "")
     bin_url = _find_bin_asset(release)
     if not bin_url:
-        raise ValueError(f"No .bin asset found in latest release of {github_repo!r}")
+        available = [a.get("name", "") for a in release.get("assets", [])]
+        raise ValueError(
+            f"No .bin asset found in latest release of {github_repo!r}. "
+            f"Available assets: {available or ['(none)']}"
+        )
     return {"version": tag, "url": bin_url, "notes": notes}
 
 

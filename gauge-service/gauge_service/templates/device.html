@@ -340,7 +340,7 @@
       <h2>OTA firmware update mode</h2>
       <p class="section-hint">
         The ESP32's <code>OTA_MANIFEST_URL</code> should point to
-        <strong>{{ request.root_url | replace('http://', 'http://') }}api/ota/manifest</strong>
+        <strong>{{ request.root_url }}api/ota/manifest</strong>
         (push this URL via MQTT using the OTA section below).
       </p>
 
@@ -377,7 +377,7 @@
         </div>
         <div class="field-row">
           <label class="field-label">OTA manifest URL to push to device</label>
-          <input type="text" value="{{ request.root_url | replace('http://', 'http://') }}api/ota/manifest" readonly style="color:#64748b">
+          <input type="text" value="{{ request.root_url }}api/ota/manifest" readonly style="color:#64748b">
         </div>
       </div>
       <div class="card">
@@ -404,7 +404,7 @@
         </div>
         <div class="field-row">
           <label class="field-label">OTA manifest URL to push to device</label>
-          <input type="text" value="{{ request.root_url | replace('http://', 'http://') }}api/ota/manifest" readonly style="color:#64748b">
+          <input type="text" value="{{ request.root_url }}api/ota/manifest" readonly style="color:#64748b">
         </div>
       </div>
       <div class="card">
@@ -457,7 +457,7 @@
         </div>
         <div class="field-row" style="margin-top:1rem">
           <label class="field-label">OTA manifest URL to push to device</label>
-          <input type="text" value="{{ request.root_url | replace('http://', 'http://') }}api/ota/manifest" readonly style="color:#64748b">
+          <input type="text" value="{{ request.root_url }}api/ota/manifest" readonly style="color:#64748b">
         </div>
       </div>
       <div class="card">
@@ -488,7 +488,7 @@
       </div>
       <div class="field-row">
         <label class="field-label" for="ota_url_push">Manifest URL for device</label>
-        <input type="text" id="ota_url_push" value="{{ device_cfg.ota_url or (request.root_url | replace('http://', 'http://') + 'api/ota/manifest') }}">
+        <input type="text" id="ota_url_push" value="{{ device_cfg.ota_url or (request.root_url + 'api/ota/manifest') }}">
       </div>
       <button class="btn btn-primary" style="margin-top:.75rem" onclick="pushOtaToDevice()">
         📡 Push OTA config to device

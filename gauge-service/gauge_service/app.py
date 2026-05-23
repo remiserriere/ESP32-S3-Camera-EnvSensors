@@ -481,7 +481,8 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         try:
             device_cfg = DeviceConfigPayload.from_dict(body)
         except Exception as exc:
-            return jsonify({"error": f"Invalid payload: {exc}"}), 400
+            app.logger.debug("Invalid device config payload: %s", exc)
+            return jsonify({"error": "Invalid payload — check field types and names"}), 400
 
         try:
             save_device_config(service_config.data_dir, device_cfg)
@@ -497,7 +498,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
                 published = True
             except Exception as exc:
                 app.logger.warning("MQTT publish for device config failed: %s", exc)
-                publish_error = str(exc)
+                publish_error = "MQTT publish failed — check broker settings"
 
         return jsonify({
             "ok": True,
@@ -513,7 +514,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             publish_device_config(service_config, device_cfg)
         except Exception as exc:
             app.logger.warning("MQTT publish for device config failed: %s", exc)
-            return jsonify({"ok": False, "error": str(exc)}), 502
+            return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
         return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
 
     # ------------------------------------------------------------------
@@ -576,7 +577,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             manifest = generate_manifest(service_config.data_dir, ota_cfg, base_url)
         except Exception as exc:
             app.logger.error("OTA manifest generation failed: %s", exc)
-            return jsonify({"error": f"Manifest generation failed: {exc}"}), 502
+            return jsonify({"error": "Manifest generation failed — check OTA mode and GitHub repo settings"}), 502
 
         if manifest is None:
             return jsonify({"error": "OTA is disabled or no firmware available"}), 404
@@ -603,7 +604,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             meta = fetch_and_cache_firmware(service_config.data_dir, ota_cfg)
         except Exception as exc:
             app.logger.error("Failed to fetch firmware from GitHub: %s", exc)
-            return jsonify({"error": f"Fetch failed: {exc}"}), 502
+            return jsonify({"error": "Firmware fetch failed — check GitHub repo and network connectivity"}), 502
 
         # Persist cached version to OTA config
         ota_cfg.cached_version = meta["version"]
@@ -648,7 +649,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             meta = save_manual_firmware(service_config.data_dir, file_bytes, version, notes)
         except Exception as exc:
             app.logger.error("Failed to save manual firmware: %s", exc)
-            return jsonify({"error": f"Storage failed: {exc}"}), 500
+            return jsonify({"error": "Failed to store firmware file"}), 500
 
         # Persist version/notes to OTA config
         ota_cfg.manual_version = version
@@ -665,7 +666,6 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         if fw_path is None:
             return jsonify({"error": "No firmware available"}), 404
 
-        import mimetypes
         return Response(
             fw_path.read_bytes(),
             status=200,

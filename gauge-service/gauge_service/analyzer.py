@@ -1,0 +1,513 @@
+"""Gauge reader based on user-provided calibration.
+
+Algorithm overview
+------------------
+1. Decode image and resize to calibration image dimensions.
+2. Drift compensation: template-match each reference patch, compute mean
+   (dx, dy) translation offset and apply it to all calibration coordinates.
+3. Needle detection:
+   a. Primary  – HSV colour: find the dominant hue of needle-like pixels in
+      the gauge circle ROI (works for coloured needles regardless of
+      brightness; uses H channel which is brightness-independent).
+   b. Fallback – Radial sweep: scan angles within the calibrated scale range,
+      score each candidate angle by its contrast along the radius (dark line
+      standing out against a lighter dial face).
+4. Interpolate needle angle against calibrated tick marks (linear between the
+   two bracketing ticks; extrapolation clamped to the scale extremes).
+5. Optionally check the value against the previous reading (delta limit).
+"""
+from __future__ import annotations
+
+import base64
+import math
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+
+from .calibration import GaugeCalibration, CircleParams, TickMark
+from .config import ServiceConfig
+
+# Pixel tolerance for template-match search area (±SEARCH_MARGIN px)
+_SEARCH_MARGIN = 60
+# Minimum template-match correlation to trust a drift estimate
+_MATCH_THRESHOLD = 0.35
+# Number of radial samples per candidate angle in radial sweep
+_RADIAL_SAMPLES = 40
+# Angular resolution for radial sweep (degrees)
+_SWEEP_STEP_DEG = 0.5
+# Needle colour: look for pixels whose saturation is high (coloured)
+# and that stand out from the dial background – tunable.
+_MIN_SATURATION = 60   # HSV S channel, 0-255
+_MIN_VALUE_HSV = 40    # HSV V channel minimum to ignore near-black corners
+# Margin beyond the tick-angle range to sweep (degrees)
+_SWEEP_MARGIN_DEG = 10.0
+
+
+class GaugeReader:
+    """Read a gauge level from an image using a pre-defined calibration."""
+
+    def __init__(self, config: ServiceConfig) -> None:
+        self.config = config
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def analyze(
+        self,
+        image_bytes: bytes,
+        calibration: GaugeCalibration,
+        prev_percentage: float | None = None,
+    ) -> dict[str, Any]:
+        """Analyse *image_bytes* using *calibration*.
+
+        Returns a dict suitable for storage in the record JSON.  Always
+        returns a valid dict; errors are surfaced via the ``status`` field.
+        """
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return _error_result("Unable to decode image payload")
+
+        # Resize to calibration dimensions so template coordinates match
+        image = _resize_to(image, calibration.image_w, calibration.image_h)
+
+        # ── 1. Drift compensation ─────────────────────────────────────────
+        drift_dx, drift_dy, drift_confidence = self._compute_drift(image, calibration)
+
+        adj_cal = _shift_calibration(calibration, drift_dx, drift_dy)
+
+        # ── 2. Needle detection ───────────────────────────────────────────
+        circle = adj_cal.circle
+        needle_angle, needle_confidence, needle_source = self._detect_needle(
+            image, adj_cal
+        )
+
+        # ── 3. Interpolate value ──────────────────────────────────────────
+        percentage, estimated = _interpolate(needle_angle, adj_cal)
+
+        # ── 4. Confidence score ───────────────────────────────────────────
+        confidence = max(5.0, min(99.0, needle_confidence * 100.0))
+        if drift_confidence < _MATCH_THRESHOLD:
+            estimated = True
+            confidence = max(5.0, confidence * 0.7)
+
+        # ── 5. Delta limit check ──────────────────────────────────────────
+        warning: str | None = None
+        if (
+            prev_percentage is not None
+            and self.config.max_delta_percent > 0
+            and abs(percentage - prev_percentage) > self.config.max_delta_percent
+        ):
+            warning = (
+                f"delta_exceeded: {abs(percentage - prev_percentage):.1f}% > "
+                f"{self.config.max_delta_percent:.1f}%"
+            )
+            estimated = True
+
+        return {
+            "percentage": round(float(np.clip(percentage, -9999, 9999)), 2),
+            "confidence": round(confidence, 2),
+            "estimated": estimated,
+            "needle_angle": round(needle_angle, 2),
+            "drift": {"dx": round(drift_dx, 2), "dy": round(drift_dy, 2)},
+            "source": needle_source,
+            "warning": warning,
+            "status": "ready",
+        }
+
+    def draw_debug_image(
+        self, image_bytes: bytes, result: dict[str, Any], calibration: GaugeCalibration
+    ) -> bytes:
+        """Return JPEG bytes of the image with a calibration + analysis overlay."""
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("Unable to decode image payload")
+        image = _resize_to(image, calibration.image_w, calibration.image_h)
+
+        dx = float(result.get("drift", {}).get("dx", 0.0))
+        dy = float(result.get("drift", {}).get("dy", 0.0))
+        adj_cal = _shift_calibration(calibration, dx, dy)
+
+        out = image.copy()
+        cx = int(round(adj_cal.circle.cx))
+        cy = int(round(adj_cal.circle.cy))
+        cr = int(round(adj_cal.circle.r))
+        h, w = out.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        fs = max(0.45, min(1.3, w / 900.0))
+
+        # Reference patches (blue rectangles, shifted by drift)
+        for p in adj_cal.patches:
+            cv2.rectangle(out, (p.x, p.y), (p.x + p.w, p.y + p.h), (220, 120, 0), 2)
+
+        # Gauge circle
+        cv2.circle(out, (cx, cy), cr, (30, 200, 30), 2)
+        cv2.circle(out, (cx, cy), max(4, cr // 20), (255, 255, 255), -1)
+
+        # Tick marks and labels
+        for tick in adj_cal.ticks:
+            angle_rad = math.radians(adj_cal.tick_angle(tick))
+            tx1 = int(cx + math.cos(angle_rad) * cr * 0.75)
+            ty1 = int(cy - math.sin(angle_rad) * cr * 0.75)
+            tx2 = int(cx + math.cos(angle_rad) * cr * 0.95)
+            ty2 = int(cy - math.sin(angle_rad) * cr * 0.95)
+            cv2.line(out, (tx1, ty1), (tx2, ty2), (0, 255, 255), 2)
+            lx = int(cx + math.cos(angle_rad) * cr * 1.08)
+            ly = int(cy - math.sin(angle_rad) * cr * 1.08)
+            cv2.putText(out, str(tick.value), (lx - 12, ly + 5),
+                        font, fs * 0.6, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # Needle line
+        needle_angle_deg = float(result.get("needle_angle", 0.0))
+        na_rad = math.radians(needle_angle_deg)
+        nx = int(cx + math.cos(na_rad) * cr * 0.85)
+        ny = int(cy - math.sin(na_rad) * cr * 0.85)
+        cv2.line(out, (cx, cy), (nx, ny), (0, 80, 255), max(2, cr // 40))
+        cv2.circle(out, (nx, ny), max(4, cr // 30), (0, 80, 255), -1)
+
+        # Info box
+        pct = result.get("percentage", "?")
+        conf = result.get("confidence", "?")
+        drift_info = f"drift ({dx:+.1f},{dy:+.1f})"
+        warning = result.get("warning") or ""
+        lines = [
+            f"Reading:    {pct}%  conf={conf}%",
+            f"Needle:     {needle_angle_deg:.1f}° [{result.get('source','')}]",
+            f"Drift:      {drift_info}",
+            f"Estimated:  {result.get('estimated', '?')}",
+        ]
+        if warning:
+            lines.append(f"Warning:    {warning}")
+        lh = max(22, int(fs * 28))
+        bx, by = 8, 8
+        bw = max(340, int(fs * 420))
+        bh = len(lines) * lh + 14
+        cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (15, 15, 15), -1)
+        cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (140, 140, 140), 1)
+        for i, line in enumerate(lines):
+            cv2.putText(out, line, (bx + 8, by + lh * (i + 1)),
+                        font, fs * 0.52, (220, 220, 220), 1, cv2.LINE_AA)
+
+        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        if not ok:
+            raise ValueError("Failed to encode debug image")
+        return bytes(buf)
+
+    # ------------------------------------------------------------------
+    # Internal: drift compensation
+    # ------------------------------------------------------------------
+
+    def _compute_drift(
+        self, image: np.ndarray, cal: GaugeCalibration
+    ) -> tuple[float, float, float]:
+        """Return (dx, dy, confidence) translation offset from template matching.
+
+        *dx, dy* are the pixel amounts to ADD to calibration coordinates to
+        align them with the current image.
+        """
+        h, w = image.shape[:2]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        offsets: list[tuple[float, float]] = []
+        confidences: list[float] = []
+
+        for patch in cal.patches:
+            template_bytes = patch.template_bytes()
+            if template_bytes is None:
+                continue
+            tmpl_arr = cv2.imdecode(
+                np.frombuffer(template_bytes, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
+            if tmpl_arr is None:
+                continue
+
+            th, tw = tmpl_arr.shape[:2]
+
+            # Search area: patch expected position ± SEARCH_MARGIN
+            sx1 = max(0, patch.x - _SEARCH_MARGIN)
+            sy1 = max(0, patch.y - _SEARCH_MARGIN)
+            sx2 = min(w, patch.x + patch.w + _SEARCH_MARGIN)
+            sy2 = min(h, patch.y + patch.h + _SEARCH_MARGIN)
+
+            # Ensure the search region is large enough to contain the template
+            if (sx2 - sx1) < tw or (sy2 - sy1) < th:
+                continue
+
+            roi = gray[sy1:sy2, sx1:sx2]
+            result = cv2.matchTemplate(roi, tmpl_arr, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            if max_val < _MATCH_THRESHOLD:
+                confidences.append(max_val)
+                continue
+
+            # max_loc is top-left of best match in roi coordinates
+            found_x = sx1 + max_loc[0]
+            found_y = sy1 + max_loc[1]
+            offsets.append((found_x - patch.x, found_y - patch.y))
+            confidences.append(max_val)
+
+        if not offsets:
+            avg_conf = float(np.mean(confidences)) if confidences else 0.0
+            return 0.0, 0.0, avg_conf
+
+        dx = float(np.mean([o[0] for o in offsets]))
+        dy = float(np.mean([o[1] for o in offsets]))
+        confidence = float(np.mean(confidences))
+        return dx, dy, confidence
+
+    # ------------------------------------------------------------------
+    # Internal: needle detection
+    # ------------------------------------------------------------------
+
+    def _detect_needle(
+        self, image: np.ndarray, cal: GaugeCalibration
+    ) -> tuple[float, float, str]:
+        """Return (needle_angle_deg, confidence_0_1, source_str)."""
+        circle = cal.circle
+        cx, cy, cr = circle.cx, circle.cy, circle.r
+
+        # Compute tick angle range + margin
+        angles_vals = cal.sorted_ticks_by_angle()
+        if not angles_vals:
+            return 0.0, 0.0, "no_ticks"
+        a_min = angles_vals[0][0] - _SWEEP_MARGIN_DEG
+        a_max = angles_vals[-1][0] + _SWEEP_MARGIN_DEG
+
+        # ── a. HSV colour method ──────────────────────────────────────────
+        angle_hsv, conf_hsv = _detect_needle_hsv(image, cx, cy, cr, a_min, a_max)
+        if conf_hsv >= 0.35:
+            return angle_hsv, conf_hsv, "hsv_color"
+
+        # ── b. Radial sweep (contrast) fallback ───────────────────────────
+        angle_sweep, conf_sweep = _detect_needle_radial_sweep(
+            image, cx, cy, cr, a_min, a_max
+        )
+        source = "radial_sweep"
+        if conf_hsv > conf_sweep:
+            return angle_hsv, conf_hsv, "hsv_color_weak"
+        return angle_sweep, conf_sweep, source
+
+
+# ---------------------------------------------------------------------------
+# Standalone helpers (module-level so they can be tested independently)
+# ---------------------------------------------------------------------------
+
+def _resize_to(image: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    h, w = image.shape[:2]
+    if w == target_w and h == target_h:
+        return image
+    return cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+
+def _shift_calibration(cal: GaugeCalibration, dx: float, dy: float) -> GaugeCalibration:
+    """Return a copy of *cal* with all pixel coordinates shifted by (dx, dy)."""
+    from .calibration import CircleParams, TickMark, PatchRegion
+
+    new_circle = CircleParams(
+        cx=cal.circle.cx + dx,
+        cy=cal.circle.cy + dy,
+        r=cal.circle.r,
+    )
+    new_ticks = [
+        TickMark(px=t.px + dx, py=t.py + dy, value=t.value)
+        for t in cal.ticks
+    ]
+    # Patches themselves are also shifted for the debug overlay, but we keep
+    # template_b64 unchanged (it still matches to original template).
+    new_patches = [
+        PatchRegion(
+            x=int(round(p.x + dx)),
+            y=int(round(p.y + dy)),
+            w=p.w,
+            h=p.h,
+            template_b64=p.template_b64,
+        )
+        for p in cal.patches
+    ]
+    from .calibration import GaugeCalibration as GC
+    return GC(
+        image_w=cal.image_w,
+        image_h=cal.image_h,
+        patches=new_patches,
+        circle=new_circle,
+        ticks=new_ticks,
+    )
+
+
+def _detect_needle_hsv(
+    image: np.ndarray,
+    cx: float, cy: float, cr: float,
+    a_min: float, a_max: float,
+) -> tuple[float, float]:
+    """Detect needle angle using HSV colour in the circular ROI.
+
+    Works best for coloured (e.g. red) needles.  Returns (angle_deg, confidence).
+    """
+    h_img, w_img = image.shape[:2]
+    # Build circular mask
+    mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    cv2.circle(mask, (int(round(cx)), int(round(cy))), int(round(cr * 0.92)), 255, -1)
+
+    # Convert to HSV for brightness-invariant colour selection
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # Find "coloured" pixels (high saturation, moderate-to-high value)
+    s_ch = hsv[:, :, 1]
+    v_ch = hsv[:, :, 2]
+    colored_mask = (
+        (s_ch.astype(np.int32) >= _MIN_SATURATION) &
+        (v_ch.astype(np.int32) >= _MIN_VALUE_HSV)
+    ).astype(np.uint8) * 255
+    combined = cv2.bitwise_and(colored_mask, mask)
+
+    # Find the dominant hue angle of coloured pixels inside the circle
+    if cv2.countNonZero(combined) < 10:
+        return 0.0, 0.0
+
+    # For each coloured pixel, compute angle from circle centre
+    ys, xs = np.where(combined > 0)
+    # Angle in image coords: math convention (0=right, CCW)
+    dx_arr = xs.astype(np.float32) - cx
+    dy_arr = cy - ys.astype(np.float32)  # flip Y
+    angles = np.degrees(np.arctan2(dy_arr, dx_arr)) % 360.0
+
+    # Filter to calibrated angular range
+    in_range = (angles >= a_min) & (angles <= a_max)
+    if in_range.sum() < 5:
+        return 0.0, 0.0
+
+    angles_filt = angles[in_range]
+    # Weighted by saturation of coloured pixels (more saturated = more needle-like)
+    weights = s_ch[ys[in_range], xs[in_range]].astype(np.float32)
+    if weights.sum() == 0:
+        return 0.0, 0.0
+
+    # Circular mean
+    sin_sum = float(np.sum(np.sin(np.radians(angles_filt)) * weights))
+    cos_sum = float(np.sum(np.cos(np.radians(angles_filt)) * weights))
+    mean_angle = math.degrees(math.atan2(sin_sum, cos_sum)) % 360.0
+
+    # Confidence: ratio of in-range coloured pixels vs all coloured pixels in circle
+    total_in_circle = cv2.countNonZero(cv2.bitwise_and(colored_mask, mask))
+    ratio = float(in_range.sum()) / max(1, total_in_circle)
+    confidence = min(0.95, ratio * 1.5)  # scale up a bit
+    return mean_angle, confidence
+
+
+def _detect_needle_radial_sweep(
+    image: np.ndarray,
+    cx: float, cy: float, cr: float,
+    a_min: float, a_max: float,
+) -> tuple[float, float]:
+    """Detect needle angle by radial contrast sweep.
+
+    For each candidate angle, sample *_RADIAL_SAMPLES* pixels from the circle
+    centre outward and compute a contrast score (variance).  The angle with
+    the highest score is taken as the needle direction.
+    Brightness-normalised using CLAHE before sampling.
+    Returns (angle_deg, confidence_0_1).
+    """
+    h_img, w_img = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply local contrast normalisation to reduce lighting variation impact
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    candidate_angles = np.arange(a_min, a_max + _SWEEP_STEP_DEG, _SWEEP_STEP_DEG)
+    scores: list[float] = []
+
+    # Radii fractions: sample from 10% to 90% of radius (skip centre hub and rim)
+    r_fracs = np.linspace(0.10, 0.90, _RADIAL_SAMPLES)
+
+    for angle_deg in candidate_angles:
+        rad = math.radians(angle_deg)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+
+        xs = np.clip(cx + r_fracs * cr * cos_a, 0, w_img - 1).astype(np.int32)
+        ys = np.clip(cy - r_fracs * cr * sin_a, 0, h_img - 1).astype(np.int32)
+        vals = gray[ys, xs].astype(np.float32)
+
+        # Score = variance (a thin dark needle line creates high variance)
+        scores.append(float(np.var(vals)))
+
+    if not scores:
+        return (a_min + a_max) / 2.0, 0.0
+
+    scores_arr = np.array(scores, dtype=np.float32)
+    # Smooth to remove noise
+    kernel_size = max(3, int(len(scores) // 20) | 1)
+    smoothed = cv2.GaussianBlur(scores_arr.reshape(1, -1), (1, kernel_size), 0).flatten()
+
+    best_idx = int(np.argmax(smoothed))
+    best_angle = float(candidate_angles[best_idx])
+
+    # Confidence: how much does the peak stand out?
+    peak = float(smoothed[best_idx])
+    median = float(np.median(smoothed))
+    if median < 1e-6:
+        confidence = 0.0
+    else:
+        snr = peak / median
+        confidence = min(0.90, max(0.0, (snr - 1.0) / 4.0))
+
+    return best_angle, confidence
+
+
+def _interpolate(
+    needle_angle: float, cal: GaugeCalibration
+) -> tuple[float, bool]:
+    """Linearly interpolate needle angle against calibrated tick marks.
+
+    Returns (percentage, estimated).  *estimated* is True when the needle
+    is outside the calibrated scale range (extrapolation).
+    """
+    pairs = cal.sorted_ticks_by_angle()  # [(angle, value), ...]
+    if len(pairs) < 2:
+        return 0.0, True
+
+    # If outside range, extrapolate from the nearest two ticks but flag as estimated
+    if needle_angle <= pairs[0][0]:
+        a0, v0 = pairs[0]
+        a1, v1 = pairs[1]
+        estimated = True
+    elif needle_angle >= pairs[-1][0]:
+        a0, v0 = pairs[-2]
+        a1, v1 = pairs[-1]
+        estimated = True
+    else:
+        estimated = False
+        # Find bracketing ticks
+        for i in range(len(pairs) - 1):
+            if pairs[i][0] <= needle_angle <= pairs[i + 1][0]:
+                a0, v0 = pairs[i]
+                a1, v1 = pairs[i + 1]
+                break
+        else:
+            a0, v0 = pairs[-2]
+            a1, v1 = pairs[-1]
+
+    span = a1 - a0
+    if abs(span) < 1e-6:
+        return float(v0), True
+
+    frac = (needle_angle - a0) / span
+    value = v0 + frac * (v1 - v0)
+    return float(value), estimated
+
+
+def _error_result(msg: str) -> dict[str, Any]:
+    return {
+        "percentage": None,
+        "confidence": 0.0,
+        "estimated": True,
+        "needle_angle": None,
+        "drift": {"dx": 0.0, "dy": 0.0},
+        "source": "error",
+        "warning": msg,
+        "status": "failed",
+    }

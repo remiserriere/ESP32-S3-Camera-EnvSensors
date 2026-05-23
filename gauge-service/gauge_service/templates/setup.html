@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Setup – {{ config.device_name }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #f1f5f9; }
+    header { background: #1e293b; padding: .8rem 1.5rem; display:flex; align-items:center; gap:1rem; border-bottom:1px solid #334155; }
+    header h1 { margin:0; font-size:1.2rem; }
+    header a { color:#93c5fd; font-size:.9rem; }
+    .layout { display:flex; height:calc(100vh - 54px); }
+    #canvas-col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0f172a; padding:.5rem; overflow:hidden; }
+    #main-canvas { cursor:crosshair; border:2px solid #334155; border-radius:4px; max-width:100%; max-height:100%; display:block; }
+    #side-panel { width:360px; background:#1e293b; border-left:1px solid #334155; display:flex; flex-direction:column; overflow:hidden; }
+    #steps-nav { display:flex; border-bottom:1px solid #334155; }
+    .step-tab { flex:1; padding:.6rem .3rem; text-align:center; font-size:.78rem; cursor:pointer; border:none; background:transparent; color:#94a3b8; transition:background .15s; }
+    .step-tab.active { background:#1d4ed8; color:#fff; font-weight:bold; }
+    .step-tab.done { color:#34d399; }
+    .step-tab:hover:not(.active) { background:#334155; }
+    #panel-content { flex:1; overflow-y:auto; padding:1rem; }
+    h2 { margin:.2rem 0 .6rem; font-size:1rem; }
+    p.hint { color:#94a3b8; font-size:.82rem; margin:.3rem 0 .8rem; }
+    .item-list { list-style:none; padding:0; margin:.5rem 0; }
+    .item-list li { display:flex; align-items:center; gap:.4rem; padding:.3rem .4rem; background:#0f172a; border-radius:4px; margin-bottom:.3rem; font-size:.85rem; }
+    .item-list li .label { flex:1; }
+    .del-btn { background:#7f1d1d; border:none; color:#fca5a5; border-radius:4px; padding:.15rem .5rem; cursor:pointer; font-size:.8rem; }
+    .del-btn:hover { background:#991b1b; }
+    input[type=number], input[type=text] { background:#0f172a; border:1px solid #475569; color:#f1f5f9; border-radius:4px; padding:.3rem .5rem; width:90px; font-size:.85rem; }
+    .btn { display:inline-block; padding:.4rem .9rem; border-radius:6px; border:none; cursor:pointer; font-size:.88rem; font-weight:600; transition:opacity .15s; }
+    .btn:hover { opacity:.85; }
+    .btn-primary { background:#1d4ed8; color:#fff; }
+    .btn-success { background:#065f46; color:#d1fae5; }
+    .btn-danger  { background:#7f1d1d; color:#fca5a5; }
+    .btn-sec     { background:#374151; color:#f1f5f9; }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+    #nav-btns { padding:.8rem 1rem; border-top:1px solid #334155; display:flex; gap:.5rem; justify-content:flex-end; }
+    #status-msg { margin:.5rem 0; font-size:.85rem; }
+    .status-ok  { color:#34d399; }
+    .status-err { color:#f87171; }
+    .status-info{ color:#60a5fa; }
+    #yaml-out { width:100%; font-family:monospace; font-size:.75rem; background:#0f172a; color:#a3e635; border:1px solid #334155; border-radius:4px; padding:.5rem; resize:vertical; height:140px; }
+    #sim-img { max-width:100%; border-radius:4px; margin:.5rem 0; }
+    .badge { display:inline-block; padding:.1rem .4rem; border-radius:999px; font-size:.72rem; font-weight:700; margin-left:.3rem; }
+    .badge-ok  { background:#064e3b; color:#6ee7b7; }
+    .badge-warn{ background:#78350f; color:#fcd34d; }
+    #circle-preview-info { font-size:.82rem; color:#94a3b8; }
+    .tick-row { display:flex; align-items:center; gap:.4rem; background:#0f172a; border-radius:4px; padding:.3rem .4rem; margin-bottom:.3rem; }
+    .tick-row .coords { font-size:.76rem; color:#64748b; min-width:80px; }
+    .tick-row input[type=number] { width:80px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Setup wizard — {{ config.device_name }}</h1>
+  <a href="/">← Back to dashboard</a>
+</header>
+
+<div class="layout">
+  <!-- Left: canvas -->
+  <div id="canvas-col">
+    {% if latest %}
+    <canvas id="main-canvas"></canvas>
+    {% else %}
+    <p style="color:#64748b;">No image available yet. Send a photo from the device first, then return here.</p>
+    {% endif %}
+  </div>
+
+  <!-- Right: step panels -->
+  <div id="side-panel">
+    <div id="steps-nav">
+      <button class="step-tab active" id="tab-1" onclick="gotoStep(1)">1 · Patches</button>
+      <button class="step-tab" id="tab-2" onclick="gotoStep(2)">2 · Circle</button>
+      <button class="step-tab" id="tab-3" onclick="gotoStep(3)">3 · Ticks</button>
+      <button class="step-tab" id="tab-4" onclick="gotoStep(4)">4 · Export</button>
+    </div>
+
+    <div id="panel-content">
+      <!-- Step 1 -->
+      <div id="step-1">
+        <h2>Step 1 – Reference patches</h2>
+        <p class="hint">
+          Click and drag on the image to define at least <strong>2</strong> fixed reference regions
+          (corners, a logo, a screw…).  These are used to compensate camera drift between shots.
+        </p>
+        <ul class="item-list" id="patch-list"></ul>
+        <p id="patch-count" style="font-size:.82rem;color:#94a3b8;"></p>
+      </div>
+
+      <!-- Step 2 -->
+      <div id="step-2" style="display:none;">
+        <h2>Step 2 – Gauge circle</h2>
+        <p class="hint">
+          Click <strong>3 or more</strong> points on the perimeter of the gauge dial.
+          A best-fit circle (or ellipse compensation) is computed from your clicks.
+        </p>
+        <ul class="item-list" id="circle-pts-list"></ul>
+        <div id="circle-preview-info">No circle fitted yet.</div>
+      </div>
+
+      <!-- Step 3 -->
+      <div id="step-3" style="display:none;">
+        <h2>Step 3 – Tick marks</h2>
+        <p class="hint">
+          Click on each graduation mark or dash on the gauge, then enter its value
+          in the list on the right.  Add at least <strong>2</strong> ticks.
+        </p>
+        <div id="tick-list"></div>
+        <p style="font-size:.8rem;color:#64748b;margin-top:.5rem;">Click the canvas to add ticks.</p>
+      </div>
+
+      <!-- Step 4 -->
+      <div id="step-4" style="display:none;">
+        <h2>Step 4 – Simulate &amp; export</h2>
+        <p class="hint">
+          Preview the calibration on the latest image, then copy the generated
+          <code>GAUGE_CONFIG</code> value into your <em>docker-compose.yml</em>
+          or Kubernetes ConfigMap.
+        </p>
+        <button class="btn btn-primary" onclick="runSimulation()">▶ Simulate reading</button>
+        <div id="status-msg"></div>
+        <img id="sim-img" style="display:none;" alt="simulation debug image">
+        <div id="sim-result" style="font-size:.85rem;margin:.5rem 0;"></div>
+        <hr style="border-color:#334155;margin:1rem 0;">
+        <h2>YAML / docker-compose snippet</h2>
+        <p class="hint">Paste this into the <code>environment:</code> section:</p>
+        <textarea id="yaml-out" readonly></textarea>
+        <button class="btn btn-sec" style="margin-top:.4rem;" onclick="copyYaml()">📋 Copy</button>
+        <span id="copy-ok" style="font-size:.8rem;color:#34d399;margin-left:.5rem;display:none;">Copied!</span>
+        <hr style="border-color:#334155;margin:1rem 0;">
+        <button class="btn btn-success" id="save-btn" onclick="saveCalibration()">💾 Save calibration to server</button>
+        <div id="save-status" style="margin-top:.5rem;font-size:.85rem;"></div>
+      </div>
+    </div><!-- /panel-content -->
+
+    <div id="nav-btns">
+      <button class="btn btn-sec" id="prev-btn" onclick="prevStep()" style="display:none;">← Prev</button>
+      <button class="btn btn-primary" id="next-btn" onclick="nextStep()">Next →</button>
+    </div>
+  </div><!-- /side-panel -->
+</div><!-- /layout -->
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+const IMAGE_URL  = {{ (latest.image_url if latest else 'null') | tojson }};
+const EXISTING   = {{ existing_calibration | tojson }};
+
+let imgEl = null;         // HTMLImageElement
+let imgNatW = 0, imgNatH = 0;  // natural (full) image dimensions
+let canvasW = 0, canvasH = 0;  // displayed canvas dimensions
+let scaleX = 1, scaleY = 1;    // canvas→image coordinate scale
+
+let currentStep = 1;
+
+// Calibration data
+let patches = [];        // [{x,y,w,h,template_b64}]
+let circlePts = [];      // [{x,y}] in image coords
+let fittedCircle = null; // {cx,cy,r}
+let ticks = [];          // [{px,py,value}]
+
+// Drag state (step 1)
+let dragging = false, dragStartX = 0, dragStartY = 0, dragCurX = 0, dragCurY = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas + image loading
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('main-canvas');
+const ctx    = canvas ? canvas.getContext('2d') : null;
+
+function imgCoords(evt) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (evt.clientX - rect.left) / scaleX,
+    y: (evt.clientY - rect.top)  / scaleY,
+  };
+}
+
+function resizeCanvas() {
+  if (!imgEl) return;
+  const col = document.getElementById('canvas-col');
+  const maxW = col.clientWidth  - 16;
+  const maxH = col.clientHeight - 16;
+  const ratio = Math.min(maxW / imgNatW, maxH / imgNatH);
+  canvasW = Math.floor(imgNatW * ratio);
+  canvasH = Math.floor(imgNatH * ratio);
+  canvas.width  = canvasW;
+  canvas.height = canvasH;
+  scaleX = ratio;
+  scaleY = ratio;
+  redraw();
+}
+
+function loadImage() {
+  if (!IMAGE_URL || !canvas) return;
+  imgEl = new Image();
+  imgEl.crossOrigin = 'anonymous';
+  imgEl.onload = () => {
+    imgNatW = imgEl.naturalWidth;
+    imgNatH = imgEl.naturalHeight;
+    resizeCanvas();
+    if (EXISTING) loadExistingCalibration();
+  };
+  imgEl.src = IMAGE_URL;
+}
+
+window.addEventListener('resize', resizeCanvas);
+loadImage();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load existing calibration if present
+// ─────────────────────────────────────────────────────────────────────────────
+function loadExistingCalibration() {
+  try {
+    const cal = JSON.parse(EXISTING);
+    patches    = (cal.patches || []).map(p => ({...p}));
+    fittedCircle = cal.circle ? {...cal.circle} : null;
+    circlePts  = [];  // we don't re-store clicked pts, just the fitted circle
+    ticks      = (cal.ticks || []).map(t => ({...t}));
+    refreshPatchList();
+    refreshCirclePts();
+    refreshTickList();
+    buildYaml();
+    redraw();
+  } catch(e) { console.warn('Could not parse existing calibration', e); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drawing
+// ─────────────────────────────────────────────────────────────────────────────
+function redraw() {
+  if (!ctx || !imgEl) return;
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.drawImage(imgEl, 0, 0, canvasW, canvasH);
+
+  // Reference patches (blue)
+  patches.forEach((p, i) => {
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(p.x * scaleX, p.y * scaleY, p.w * scaleX, p.h * scaleY);
+    ctx.fillStyle = 'rgba(59,130,246,.12)';
+    ctx.fillRect(p.x * scaleX, p.y * scaleY, p.w * scaleX, p.h * scaleY);
+    ctx.fillStyle = '#3b82f6';
+    ctx.font = '11px Arial';
+    ctx.fillText('P' + (i+1), p.x * scaleX + 3, p.y * scaleY + 12);
+  });
+
+  // Current drag rect (step 1)
+  if (dragging && currentStep === 1) {
+    const rx = Math.min(dragStartX, dragCurX) * scaleX;
+    const ry = Math.min(dragStartY, dragCurY) * scaleY;
+    const rw = Math.abs(dragCurX - dragStartX) * scaleX;
+    const rh = Math.abs(dragCurY - dragStartY) * scaleY;
+    ctx.strokeStyle = '#60a5fa';
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.setLineDash([]);
+  }
+
+  // Circle perimeter points (step 2, green)
+  circlePts.forEach((pt, i) => {
+    ctx.beginPath();
+    ctx.arc(pt.x * scaleX, pt.y * scaleY, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#22c55e';
+    ctx.fill();
+    ctx.fillStyle = '#22c55e';
+    ctx.font = '10px Arial';
+    ctx.fillText(i+1, pt.x * scaleX + 6, pt.y * scaleY - 3);
+  });
+
+  // Fitted circle (green)
+  if (fittedCircle) {
+    const {cx, cy, r} = fittedCircle;
+    ctx.beginPath();
+    ctx.arc(cx * scaleX, cy * scaleY, r * scaleX, 0, Math.PI*2);
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Centre dot
+    ctx.beginPath();
+    ctx.arc(cx * scaleX, cy * scaleY, 4, 0, Math.PI*2);
+    ctx.fillStyle = '#4ade80';
+    ctx.fill();
+  }
+
+  // Ticks (red/orange dots)
+  ticks.forEach((t, i) => {
+    ctx.beginPath();
+    ctx.arc(t.px * scaleX, t.py * scaleY, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#f97316';
+    ctx.fill();
+    ctx.fillStyle = '#fdba74';
+    ctx.font = '10px Arial';
+    ctx.fillText(t.value !== '' ? t.value : '?', t.px * scaleX + 6, t.py * scaleY - 3);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step navigation
+// ─────────────────────────────────────────────────────────────────────────────
+function gotoStep(n) {
+  document.getElementById('step-' + currentStep).style.display = 'none';
+  document.getElementById('tab-'  + currentStep).classList.remove('active');
+  currentStep = n;
+  document.getElementById('step-' + n).style.display = '';
+  document.getElementById('tab-'  + n).classList.add('active');
+  document.getElementById('prev-btn').style.display = n > 1 ? '' : 'none';
+  document.getElementById('next-btn').textContent = n < 4 ? 'Next →' : 'Done ✓';
+  if (n === 4) buildYaml();
+  redraw();
+}
+function nextStep() { if (currentStep < 4) gotoStep(currentStep + 1); else window.location.href = '/'; }
+function prevStep() { if (currentStep > 1) gotoStep(currentStep - 1); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas events
+// ─────────────────────────────────────────────────────────────────────────────
+if (canvas) {
+  canvas.addEventListener('mousedown', e => {
+    if (currentStep !== 1) return;
+    const {x, y} = imgCoords(e);
+    dragging = true; dragStartX = x; dragStartY = y; dragCurX = x; dragCurY = y;
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!dragging || currentStep !== 1) return;
+    const {x, y} = imgCoords(e);
+    dragCurX = x; dragCurY = y;
+    redraw();
+  });
+
+  canvas.addEventListener('mouseup', e => {
+    if (currentStep === 1 && dragging) {
+      dragging = false;
+      const x = Math.round(Math.min(dragStartX, dragCurX));
+      const y = Math.round(Math.min(dragStartY, dragCurY));
+      const w = Math.round(Math.abs(dragCurX - dragStartX));
+      const h = Math.round(Math.abs(dragCurY - dragStartY));
+      if (w > 8 && h > 8) {
+        const tmpl = extractPatch(x, y, w, h);
+        patches.push({x, y, w, h, template_b64: tmpl});
+        refreshPatchList();
+        redraw();
+      }
+      dragging = false;
+    } else if (currentStep === 2) {
+      const {x, y} = imgCoords(e);
+      circlePts.push({x: Math.round(x), y: Math.round(y)});
+      if (circlePts.length >= 3) fitCircle();
+      refreshCirclePts();
+      redraw();
+    } else if (currentStep === 3) {
+      const {x, y} = imgCoords(e);
+      ticks.push({px: Math.round(x), py: Math.round(y), value: ''});
+      refreshTickList();
+      redraw();
+      // Focus the last value input
+      const inputs = document.querySelectorAll('.tick-val');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    }
+  });
+
+  canvas.addEventListener('mouseleave', () => { dragging = false; redraw(); });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Patch template extraction
+// ─────────────────────────────────────────────────────────────────────────────
+function extractPatch(x, y, w, h) {
+  // x,y,w,h in ORIGINAL image coordinates
+  const tmp = document.createElement('canvas');
+  tmp.width  = w;
+  tmp.height = h;
+  const tc = tmp.getContext('2d');
+  tc.drawImage(imgEl, x, y, w, h, 0, 0, w, h);
+  // toDataURL returns "data:image/jpeg;base64,<b64>"
+  return tmp.toDataURL('image/jpeg', 0.90).split(',')[1];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Patch list UI
+// ─────────────────────────────────────────────────────────────────────────────
+function refreshPatchList() {
+  const ul = document.getElementById('patch-list');
+  ul.innerHTML = '';
+  patches.forEach((p, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <span class="label">Patch ${i+1}: (${p.x},${p.y}) ${p.w}×${p.h}</span>
+      <button class="del-btn" onclick="deletePatch(${i})">✕</button>`;
+    ul.appendChild(li);
+  });
+  document.getElementById('patch-count').textContent =
+    `${patches.length} patch(es) defined — minimum 2 required.`;
+  document.getElementById('tab-1').className =
+    'step-tab' + (currentStep===1?' active':'') + (patches.length>=2?' done':'');
+}
+
+function deletePatch(i) {
+  patches.splice(i, 1);
+  refreshPatchList();
+  redraw();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Circle fitting (Kasa algebraic, pure JS)
+// ─────────────────────────────────────────────────────────────────────────────
+function fitCircle() {
+  const pts = circlePts;
+  if (pts.length < 3) { fittedCircle = null; return; }
+  const n = pts.length;
+  let s_x=0,s_y=0,s_xx=0,s_yy=0,s_xy=0,s_xxx=0,s_yyy=0,s_xyy=0,s_xxy=0;
+  for (const {x,y} of pts) {
+    s_x+=x; s_y+=y; s_xx+=x*x; s_yy+=y*y; s_xy+=x*y;
+    s_xxx+=x*x*x; s_yyy+=y*y*y; s_xyy+=x*y*y; s_xxy+=x*x*y;
+  }
+  // Solve 2x2 system: A·[cx,cy]^T = b
+  const A11=2*(s_xx-s_x*s_x/n), A12=2*(s_xy-s_x*s_y/n);
+  const A21=A12,                  A22=2*(s_yy-s_y*s_y/n);
+  const b1 = s_xxx + s_xyy - s_x*(s_xx+s_yy)/n;
+  const b2 = s_yyy + s_xxy - s_y*(s_xx+s_yy)/n;
+  const det = A11*A22 - A12*A21;
+  if (Math.abs(det) < 1e-9) { fittedCircle = null; return; }
+  const cx = (b1*A22 - b2*A12) / det;
+  const cy = (b2*A11 - b1*A21) / det;
+  let rSum = 0;
+  for (const {x,y} of pts) rSum += Math.sqrt((x-cx)**2+(y-cy)**2);
+  const r = rSum / n;
+  fittedCircle = {cx: Math.round(cx*100)/100, cy: Math.round(cy*100)/100, r: Math.round(r*100)/100};
+  document.getElementById('circle-preview-info').textContent =
+    `Fitted: centre (${fittedCircle.cx.toFixed(1)}, ${fittedCircle.cy.toFixed(1)}), radius ${fittedCircle.r.toFixed(1)} px`;
+}
+
+function refreshCirclePts() {
+  const ul = document.getElementById('circle-pts-list');
+  ul.innerHTML = '';
+  circlePts.forEach((p, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="label">Point ${i+1}: (${p.x}, ${p.y})</span>
+      <button class="del-btn" onclick="deleteCirclePt(${i})">✕</button>`;
+    ul.appendChild(li);
+  });
+  document.getElementById('tab-2').className =
+    'step-tab' + (currentStep===2?' active':'') + (fittedCircle?' done':'');
+}
+
+function deleteCirclePt(i) {
+  circlePts.splice(i, 1);
+  if (circlePts.length >= 3) fitCircle(); else fittedCircle = null;
+  refreshCirclePts();
+  redraw();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tick marks UI
+// ─────────────────────────────────────────────────────────────────────────────
+function refreshTickList() {
+  const div = document.getElementById('tick-list');
+  div.innerHTML = '';
+  ticks.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'tick-row';
+    row.innerHTML = `
+      <span class="coords">(${t.px}, ${t.py})</span>
+      <input class="tick-val" type="number" step="any" placeholder="value"
+             value="${t.value}" onchange="tickValueChange(${i}, this.value)">
+      <button class="del-btn" onclick="deleteTick(${i})">✕</button>`;
+    div.appendChild(row);
+  });
+  document.getElementById('tab-3').className =
+    'step-tab' + (currentStep===3?' active':'') + (ticks.length>=2?' done':'');
+}
+
+function tickValueChange(i, val) {
+  ticks[i].value = parseFloat(val);
+  redraw();
+}
+
+function deleteTick(i) {
+  ticks.splice(i, 1);
+  refreshTickList();
+  redraw();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build calibration JSON + YAML snippet
+// ─────────────────────────────────────────────────────────────────────────────
+function buildCalibrationObj() {
+  return {
+    image_size: [imgNatW, imgNatH],
+    patches: patches.map(p => ({x:p.x,y:p.y,w:p.w,h:p.h,template_b64:p.template_b64||''})),
+    circle: fittedCircle || {cx:0, cy:0, r:0},
+    ticks: ticks.map(t => ({px:t.px, py:t.py, value: typeof t.value==='number' ? t.value : parseFloat(t.value||0)})),
+  };
+}
+
+function buildYaml() {
+  const cal = buildCalibrationObj();
+  const json = JSON.stringify(cal);
+  const yaml = `# docker-compose.yml environment section:\nGAUGE_CONFIG: '${json}'\n\n# Or for Kubernetes ConfigMap:\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: gauge-config\ndata:\n  GAUGE_CONFIG: |\n    ${json}`;
+  document.getElementById('yaml-out').value = yaml;
+}
+
+function copyYaml() {
+  const ta = document.getElementById('yaml-out');
+  ta.select();
+  navigator.clipboard.writeText(ta.value).catch(() => document.execCommand('copy'));
+  const ok = document.getElementById('copy-ok');
+  ok.style.display = 'inline';
+  setTimeout(() => ok.style.display = 'none', 2000);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Simulation (step 4)
+// ─────────────────────────────────────────────────────────────────────────────
+async function runSimulation() {
+  const msg = document.getElementById('status-msg');
+  const simImg = document.getElementById('sim-img');
+  const simResult = document.getElementById('sim-result');
+  msg.className = 'status-info'; msg.textContent = '⏳ Running simulation…';
+  simImg.style.display = 'none';
+  simResult.innerHTML = '';
+
+  const cal = buildCalibrationObj();
+  try {
+    const resp = await fetch('/api/calibration/simulate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({config: JSON.stringify(cal)}),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      msg.className = 'status-err';
+      msg.textContent = '❌ ' + (data.error || 'Unknown error');
+      return;
+    }
+    msg.className = 'status-ok'; msg.textContent = '✅ Simulation complete.';
+    if (data.debug_image_url) {
+      simImg.src = data.debug_image_url + '?t=' + Date.now();
+      simImg.style.display = 'block';
+    }
+    if (data.result) {
+      const r = data.result;
+      simResult.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+          <tr><td style="padding:.2rem .4rem;color:#94a3b8;">Level</td><td><strong>${r.percentage ?? 'N/A'} %</strong></td></tr>
+          <tr><td style="padding:.2rem .4rem;color:#94a3b8;">Confidence</td><td>${r.confidence ?? 'N/A'} %</td></tr>
+          <tr><td style="padding:.2rem .4rem;color:#94a3b8;">Needle angle</td><td>${r.needle_angle ?? 'N/A'}°</td></tr>
+          <tr><td style="padding:.2rem .4rem;color:#94a3b8;">Drift</td><td>dx=${r.drift?.dx ?? 0}, dy=${r.drift?.dy ?? 0} px</td></tr>
+          <tr><td style="padding:.2rem .4rem;color:#94a3b8;">Source</td><td>${r.source ?? ''}</td></tr>
+          ${r.warning ? `<tr><td style="color:#fbbf24;">Warning</td><td style="color:#fbbf24;">${r.warning}</td></tr>` : ''}
+        </table>`;
+    }
+  } catch(e) {
+    msg.className = 'status-err'; msg.textContent = '❌ Request failed: ' + e;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save calibration
+// ─────────────────────────────────────────────────────────────────────────────
+async function saveCalibration() {
+  const btn = document.getElementById('save-btn');
+  const st  = document.getElementById('save-status');
+  btn.disabled = true;
+  st.textContent = '⏳ Saving…';
+  const cal = buildCalibrationObj();
+  try {
+    const resp = await fetch('/api/calibration', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({config: JSON.stringify(cal)}),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      st.style.color = '#34d399';
+      st.textContent = '✅ Calibration saved! Redirecting to dashboard…';
+      setTimeout(() => window.location.href = '/', 1500);
+    } else {
+      st.style.color = '#f87171';
+      st.textContent = '❌ ' + (data.error || 'Save failed') +
+        (data.details ? '\n' + data.details.join('\n') : '');
+      btn.disabled = false;
+    }
+  } catch(e) {
+    st.style.color = '#f87171';
+    st.textContent = '❌ Request failed: ' + e;
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

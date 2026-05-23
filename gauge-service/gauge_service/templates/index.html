@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ config.device_name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #111827; color: #f9fafb; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+    .card { background: #1f2937; border-radius: 12px; padding: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,.2); }
+    img { max-width: 100%; border-radius: 8px; display: block; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: .45rem; border-bottom: 1px solid #374151; text-align: left; vertical-align: top; }
+    .muted { color: #9ca3af; font-size: .95rem; }
+    a { color: #93c5fd; }
+    ul { padding-left: 1rem; }
+    .btn {
+      display: inline-block;
+      margin: .4rem .4rem 0 0;
+      padding: .35rem .9rem;
+      background: #374151;
+      color: #f9fafb;
+      border: 1px solid #4b5563;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: .9rem;
+      text-decoration: none;
+    }
+    .btn.active { background: #1d4ed8; border-color: #3b82f6; }
+    .btn:hover { opacity: .85; }
+    .btn-setup { background: #065f46; border-color: #059669; }
+    .btn-setup:hover { background: #047857; }
+    .status-ok { color: #34d399; font-weight: bold; }
+    .status-warn { color: #fbbf24; font-weight: bold; }
+    .status-err { color: #f87171; font-weight: bold; }
+    .cal-banner { padding: .6rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .93rem; }
+    .cal-banner.ok { background: #064e3b; border: 1px solid #065f46; }
+    .cal-banner.err { background: #450a0a; border: 1px solid #7f1d1d; }
+  </style>
+</head>
+<body>
+  <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem;">
+    <h1 style="margin:0;">{{ config.device_name }}</h1>
+    <a href="/setup" class="btn btn-setup">⚙️ Setup / Calibration</a>
+  </div>
+
+  {% if calibration_configured %}
+  <div class="cal-banner ok">✅ Calibration active — gauge reading enabled.</div>
+  {% else %}
+  <div class="cal-banner err">
+    ⚠️ No valid calibration configured — images are stored but not analysed.
+    {% if calibration_errors %}<br>{{ calibration_errors | join(' ') }}{% endif %}
+    <a href="/setup" style="margin-left:.5rem;">→ Run setup wizard</a>
+  </div>
+  {% endif %}
+
+  {% if latest %}
+  <div class="grid">
+    <section class="card">
+      <h2>Latest image</h2>
+      <p class="muted">{{ latest.received_at }}</p>
+      <a class="img-link" href="{{ latest.image_url }}" id="link-{{ latest.id }}">
+        <img id="img-{{ latest.id }}"
+             src="{{ latest.image_url }}"
+             data-original="{{ latest.image_url }}"
+             data-debug="/debug_image/{{ latest.id }}"
+             alt="latest gauge image">
+      </a>
+      <div style="margin-top:.6rem;">
+        {% if latest.analysis %}
+        <button class="btn" id="btn-{{ latest.id }}" onclick="toggleDebug('{{ latest.id }}')">
+          🔍 Show debug overlay
+        </button>
+        {% endif %}
+      </div>
+    </section>
+    <section class="card">
+      <h2>Extracted data</h2>
+      {% if latest.analysis and latest.analysis.status == 'ready' %}
+      <table>
+        <tr><th>Gauge level</th><td>{{ latest.analysis.percentage }} %</td></tr>
+        <tr><th>Confidence</th><td>{{ latest.analysis.confidence }} %</td></tr>
+        <tr><th>Estimated</th><td>{{ latest.analysis.estimated }}</td></tr>
+        <tr><th>Needle angle</th><td>{{ latest.analysis.needle_angle }}°</td></tr>
+        <tr><th>Drift (dx,dy)</th><td>{{ latest.analysis.drift.dx }}, {{ latest.analysis.drift.dy }} px</td></tr>
+        <tr><th>Detection source</th><td>{{ latest.analysis.source }}</td></tr>
+        {% if latest.analysis.warning %}
+        <tr><th>Warning</th><td class="status-warn">{{ latest.analysis.warning }}</td></tr>
+        {% endif %}
+        <tr><th>Metadata</th><td><pre>{{ latest.metadata | tojson(indent=2) }}</pre></td></tr>
+      </table>
+      {% elif latest.status == 'no_calibration' %}
+      <p class="status-warn">No calibration — image stored without analysis.</p>
+      <p><a href="/setup">→ Configure calibration</a></p>
+      {% elif latest.status == 'pending' %}
+      <p>Analysis pending…</p>
+      {% else %}
+      <p>Analysis unavailable.</p>
+      <p class="muted">status={{ latest.status }} {% if latest.error %}— {{ latest.error }}{% endif %}</p>
+      {% endif %}
+    </section>
+  </div>
+  {% else %}
+  <p>No image received yet.</p>
+  {% endif %}
+
+  {% if config.max_snapshots != 1 %}
+  <section class="card" style="margin-top: 1.5rem;">
+    <h2>Stored photos</h2>
+    <ul>
+      {% for record in records %}
+      <li>
+        <a href="{{ record.image_url }}">{{ record.image_name }}</a>
+        {% if record.analysis and record.analysis.status == 'ready' %}
+        — {{ record.analysis.percentage }}%
+          (conf {{ record.analysis.confidence }}%,
+           est={{ record.analysis.estimated }})
+        — <a href="/debug_image/{{ record.id }}" target="_blank">🔍 debug</a>
+        {% else %}
+        — status={{ record.status }}
+        {% endif %}
+      </li>
+      {% else %}
+      <li>No stored photo.</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <script>
+    function toggleDebug(id) {
+      const img  = document.getElementById('img-' + id);
+      const btn  = document.getElementById('btn-' + id);
+      const link = document.getElementById('link-' + id);
+      const isDebug = btn.classList.contains('active');
+      if (isDebug) {
+        img.src   = img.dataset.original;
+        link.href = img.dataset.original;
+        btn.textContent = '🔍 Show debug overlay';
+        btn.classList.remove('active');
+      } else {
+        img.src   = img.dataset.debug;
+        link.href = img.dataset.debug;
+        btn.textContent = '🔍 Hide debug overlay';
+        btn.classList.add('active');
+      }
+    }
+  </script>
+</body>
+</html>

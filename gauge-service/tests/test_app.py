@@ -337,3 +337,183 @@ def test_calibration_file_endpoint_from_saved_file(tmp_path: Path) -> None:
     assert resp.content_type.startswith('application/json')
     data = resp.get_json()
     assert 'circle' in data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Service config page and API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_config_page_renders(tmp_path: Path) -> None:
+    """GET /config renders without error and contains key headings."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.get('/config')
+    assert resp.status_code == 200
+    body = resp.data
+    assert b'Settings' in body
+    assert b'MQTT' in body
+    assert b'Analysis' in body
+
+
+def test_config_page_shows_settings_link_on_index(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.get('/')
+    assert resp.status_code == 200
+    assert b'/config' in resp.data
+
+
+def test_config_api_get(tmp_path: Path) -> None:
+    """GET /api/config returns current config and env_overrides list."""
+    config = _base_config(tmp_path, device_name="TestGauge", max_snapshots=7)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.get('/api/config')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert 'config' in data
+    assert data['config']['device_name'] == 'TestGauge'
+    assert data['config']['max_snapshots'] == 7
+    assert 'env_overrides' in data
+    assert isinstance(data['env_overrides'], list)
+    assert 'fields_need_reboot' in data
+
+
+def test_config_api_save_hot_reload(tmp_path: Path) -> None:
+    """POST /api/config saves to file and hot-reloads non-MQTT fields."""
+    config = _base_config(tmp_path, device_name="Before")
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post(
+        '/api/config',
+        data=json.dumps({"device_name": "After", "max_snapshots": 99}),
+        content_type='application/json',
+    )
+    assert resp.status_code == 200
+    result = resp.get_json()
+    assert result['ok'] is True
+    assert 'device_name' in result['hot_reloaded']
+    assert 'max_snapshots' in result['hot_reloaded']
+
+    # Live config updated
+    assert config.device_name == 'After'
+    assert config.max_snapshots == 99
+
+    # Persisted to file
+    cfg_file = tmp_path / 'service_config.json'
+    assert cfg_file.exists()
+    saved = json.loads(cfg_file.read_text())
+    assert saved['device_name'] == 'After'
+    assert saved['max_snapshots'] == 99
+
+
+def test_config_api_save_mqtt_requires_reboot(tmp_path: Path) -> None:
+    """POST /api/config with MQTT fields returns reboot_required=True."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post(
+        '/api/config',
+        data=json.dumps({"mqtt_host": "newhost", "mqtt_port": 1884}),
+        content_type='application/json',
+    )
+    assert resp.status_code == 200
+    result = resp.get_json()
+    assert result['reboot_required'] is True
+    assert 'mqtt_host' in result['reboot_fields']
+
+
+def test_config_api_save_validation_errors(tmp_path: Path) -> None:
+    """POST /api/config rejects invalid values with 422."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post(
+        '/api/config',
+        data=json.dumps({"max_snapshots": -5, "mqtt_port": 99999}),
+        content_type='application/json',
+    )
+    assert resp.status_code == 422
+    result = resp.get_json()
+    assert 'details' in result
+    assert len(result['details']) >= 2
+
+
+def test_config_file_endpoint_no_file(tmp_path: Path) -> None:
+    """GET /api/config/file returns the in-memory config when no file exists."""
+    config = _base_config(tmp_path, device_name="InMemory")
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.get('/api/config/file')
+    assert resp.status_code == 200
+    assert resp.content_type.startswith('application/json')
+    data = resp.get_json()
+    assert data['device_name'] == 'InMemory'
+
+
+def test_config_file_endpoint_after_save(tmp_path: Path) -> None:
+    """GET /api/config/file returns the persisted file content after save."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    client.post(
+        '/api/config',
+        data=json.dumps({"device_name": "Saved"}),
+        content_type='application/json',
+    )
+
+    resp = client.get('/api/config/file')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['device_name'] == 'Saved'
+
+
+def test_config_load_from_file(tmp_path: Path) -> None:
+    """ServiceConfig.load() reads values from service_config.json."""
+    cfg_file = tmp_path / 'service_config.json'
+    cfg_file.write_text(json.dumps({
+        "device_name": "FromFile",
+        "max_snapshots": 42,
+        "needle_detection_method": "dark_radial",
+    }), encoding='utf-8')
+
+    loaded = ServiceConfig.load(data_dir=tmp_path)
+    assert loaded.device_name == 'FromFile'
+    assert loaded.max_snapshots == 42
+    assert loaded.needle_detection_method == 'dark_radial'
+
+
+def test_config_env_takes_priority_over_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var overrides the value in service_config.json."""
+    cfg_file = tmp_path / 'service_config.json'
+    cfg_file.write_text(json.dumps({"device_name": "FromFile"}), encoding='utf-8')
+
+    monkeypatch.setenv('DEVICE_NAME', 'FromEnv')
+    loaded = ServiceConfig.load(data_dir=tmp_path)
+    assert loaded.device_name == 'FromEnv'
+    assert 'device_name' in loaded.env_overrides()
+
+
+def test_config_page_shows_locked_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config page marks env-locked fields with the lock badge."""
+    monkeypatch.setenv('DEVICE_NAME', 'EnvDevice')
+    config = ServiceConfig.load(data_dir=tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.get('/config')
+    assert resp.status_code == 200
+    body = resp.data
+    # The badge for env-locked fields should appear
+    assert b'badge-env' in body or b'REBOOT' in body
+

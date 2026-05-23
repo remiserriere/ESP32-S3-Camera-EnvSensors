@@ -14,13 +14,13 @@ _RECORD_ID_RE = re.compile(r'^\d{8}T\d{12}Z$')
 
 from .analyzer import GaugeReader
 from .calibration import GaugeCalibration
-from .config import ServiceConfig
+from .config import ServiceConfig, _FIELD_ENV_MAP, _FIELDS_NEED_REBOOT, _VALID_NEEDLE_METHODS
 from .mqtt import MqttPublisher
 from .storage import StorageManager
 
 
 def create_app(config: ServiceConfig | None = None) -> Flask:
-    service_config = config or ServiceConfig.from_env()
+    service_config = config or ServiceConfig.load()
     app = Flask(__name__)
     storage = StorageManager(service_config)
     reader = GaugeReader(service_config)
@@ -72,6 +72,77 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         return {"configured": len(errors) == 0, "errors": errors}
 
     # ------------------------------------------------------------------
+    # Service config helpers
+    # ------------------------------------------------------------------
+
+    def _load_service_config_file() -> dict:
+        """Read service_config.json from disk (empty dict if missing/invalid)."""
+        cfg_file = service_config.config_file
+        if cfg_file.exists():
+            try:
+                raw = cfg_file.read_text(encoding="utf-8")
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception as exc:
+                app.logger.warning("Failed to read service config file: %s", exc)
+        return {}
+
+    def _save_service_config_file(data: dict) -> None:
+        cfg_file = service_config.config_file
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _apply_hot_reload(data: dict) -> list[str]:
+        """Apply editable, hot-reloadable fields directly to the live config.
+
+        Returns the list of fields that were updated in memory.
+        """
+        updated: list[str] = []
+        locked = service_config.env_overrides()
+        for field, value in data.items():
+            if field in _FIELDS_NEED_REBOOT:
+                continue  # skip — requires restart
+            if field in locked:
+                continue  # env var wins, cannot override at runtime
+            if not hasattr(service_config, field):
+                continue
+            try:
+                setattr(service_config, field, value)
+                updated.append(field)
+            except Exception as exc:
+                app.logger.warning("Hot-reload failed for %s: %s", field, exc)
+        return updated
+
+    def _validate_config_body(body: dict) -> list[str]:
+        """Return a list of validation error strings (empty = OK)."""
+        errors: list[str] = []
+        if "max_snapshots" in body:
+            try:
+                if int(body["max_snapshots"]) < 0:
+                    errors.append("max_snapshots must be >= 0")
+            except (TypeError, ValueError):
+                errors.append("max_snapshots must be an integer")
+        if "serve_history_limit" in body:
+            try:
+                if int(body["serve_history_limit"]) < 1:
+                    errors.append("serve_history_limit must be >= 1")
+            except (TypeError, ValueError):
+                errors.append("serve_history_limit must be an integer")
+        if "mqtt_port" in body:
+            try:
+                p = int(body["mqtt_port"])
+                if not (1 <= p <= 65535):
+                    errors.append("mqtt_port must be between 1 and 65535")
+            except (TypeError, ValueError):
+                errors.append("mqtt_port must be an integer")
+        if "needle_detection_method" in body:
+            if body["needle_detection_method"] not in _VALID_NEEDLE_METHODS:
+                errors.append(
+                    f"needle_detection_method must be one of {sorted(_VALID_NEEDLE_METHODS)}"
+                )
+        return errors
+
+    # ------------------------------------------------------------------
     # Web UI routes
     # ------------------------------------------------------------------
 
@@ -99,6 +170,15 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             config=service_config,
             latest=latest,
             existing_calibration=cal.to_json() if cal else "",
+        )
+
+    @app.get("/config")
+    def config_page() -> str:
+        return render_template(
+            "config.html",
+            config=service_config,
+            env_overrides=service_config.env_overrides(),
+            fields_need_reboot=_FIELDS_NEED_REBOOT,
         )
 
     # ------------------------------------------------------------------
@@ -147,6 +227,88 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     @app.get("/photos/<path:filename>")
     def photos(filename: str) -> Any:
         return send_from_directory(service_config.photos_dir, filename)
+
+    # ------------------------------------------------------------------
+    # Service config API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/config")
+    def get_service_config() -> Any:
+        """Return current effective config + which fields are env-locked."""
+        return jsonify({
+            "config": service_config.to_dict(),
+            "env_overrides": sorted(service_config.env_overrides()),
+            "fields_need_reboot": sorted(_FIELDS_NEED_REBOOT),
+        })
+
+    @app.get("/api/config/file")
+    def get_service_config_file() -> Any:
+        """Serve service_config.json so it can be downloaded or volume-mounted."""
+        cfg_file = service_config.config_file
+        if cfg_file.exists():
+            try:
+                raw = cfg_file.read_text(encoding="utf-8").strip()
+                if raw:
+                    return Response(
+                        raw,
+                        status=200,
+                        mimetype="application/json",
+                        headers={"Content-Disposition": "inline; filename=service_config.json"},
+                    )
+            except Exception as exc:
+                app.logger.warning("Failed to read service config file: %s", exc)
+                return jsonify({"error": "Failed to read config file"}), 500
+        # No file yet: return the current in-memory config so the user can
+        # download it as a starting point.
+        return Response(
+            service_config.to_json(),
+            status=200,
+            mimetype="application/json",
+            headers={"Content-Disposition": "inline; filename=service_config.json"},
+        )
+
+    @app.post("/api/config")
+    def save_service_config() -> Any:
+        """Persist editable service configuration and hot-reload safe fields."""
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+        # Drop fields that cannot be changed via the UI.
+        body.pop("host", None)
+        body.pop("port", None)
+        body.pop("data_dir", None)
+        body.pop("gauge_config_json", None)
+
+        # Also ignore fields locked by env vars.
+        locked = service_config.env_overrides()
+        for field in locked:
+            body.pop(field, None)
+
+        validation_errors = _validate_config_body(body)
+        if validation_errors:
+            return jsonify({"error": "Validation failed", "details": validation_errors}), 422
+
+        # Merge with existing file content so we don't lose fields not in body.
+        existing = _load_service_config_file()
+        existing.update(body)
+
+        try:
+            _save_service_config_file(existing)
+        except Exception as exc:
+            app.logger.error("Failed to save service config: %s", exc)
+            return jsonify({"error": "Failed to persist config"}), 500
+
+        # Hot-reload compatible fields immediately.
+        hot_reloaded = _apply_hot_reload(body)
+
+        needs_reboot = [f for f in body if f in _FIELDS_NEED_REBOOT and f not in locked]
+        return jsonify({
+            "ok": True,
+            "hot_reloaded": hot_reloaded,
+            "reboot_required": bool(needs_reboot),
+            "reboot_fields": needs_reboot,
+        })
 
     # ------------------------------------------------------------------
     # Calibration API

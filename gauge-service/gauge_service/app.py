@@ -146,7 +146,8 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         try:
             cal = GaugeCalibration.from_json(raw)
         except Exception as exc:
-            return jsonify({"error": f"Invalid calibration JSON: {exc}"}), 400
+            app.logger.warning("Invalid calibration JSON: %s", exc)
+            return jsonify({"error": "Invalid calibration JSON"}), 400
         errors = cal.validate()
         if errors:
             return jsonify({"error": "Calibration validation failed", "details": errors}), 422
@@ -167,7 +168,8 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         try:
             cal = GaugeCalibration.from_json(raw)
         except Exception as exc:
-            return jsonify({"error": f"Invalid calibration JSON: {exc}"}), 400
+            app.logger.warning("Invalid calibration JSON for simulate: %s", exc)
+            return jsonify({"error": "Invalid calibration JSON"}), 400
         errors = cal.validate()
         if errors:
             return jsonify({"error": "Calibration validation failed", "details": errors}), 422
@@ -184,7 +186,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             result = reader.analyze(image_bytes, cal)
         except Exception as exc:
             app.logger.error("Simulation analysis failed: %s", exc)
-            return jsonify({"error": f"Analysis failed: {exc}"}), 500
+            return jsonify({"error": "Analysis failed"}), 500
 
         # Generate debug image and store as temp file (reuse record ID as key)
         try:

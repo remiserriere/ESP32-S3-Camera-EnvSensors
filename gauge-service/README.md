@@ -7,20 +7,20 @@ Service Flask séparé du `web-server/server.py` historique.
 - réception des images en `POST /upload`
 - renommage par timestamp de réception
 - conservation paramétrable des photos et des métadonnées extraites
-- lecture de jauge sans apprentissage local, via OpenCV
+- lecture de jauge via calibration manuelle (page `/setup`)
+- compensation de dérive caméra par recalage sur des zones de référence
 - publication MQTT + autodiscovery Home Assistant au démarrage
 - interface web minimale sur `/`
 
 ## Choix techniques
 
-Le service utilise **OpenCV** plutôt que TensorFlow :
+La lecture utilise **OpenCV** pour :
 
-- détection du cadran par géométrie
-- détection de l’aiguille en priorité via les segments rouges
-- tentative de repérage des extrémités de l’échelle (`5` / `95`) par vision classique
-- repli configurable par angles par défaut si l’image est partielle ou si la détection est incomplète
+- compensation de dérive caméra par template matching sur les zones de référence définies lors du setup
+- détection de l'aiguille via la couleur HSV (méthode primaire) ou sweep radial de contraste (fallback)
+- interpolation linéaire entre les repères définis manuellement
 
-Dans ce cas, le champ `estimated` passe à `true` et une `confidence` plus faible est publiée.
+Le champ `estimated` passe à `true` et une `confidence` plus faible est publiée lorsque la dérive est trop importante ou que la détection est ambiguë.
 
 ## Lancement local
 
@@ -36,24 +36,25 @@ PYTHONPATH=. python -m gauge_service.app
 
 Toutes les variables sont prévues pour être fixées directement dans `docker-compose.yml` ou `k8s/gauge-service.yaml`.
 
-- `MAX_SNAPSHOTS`
+- `MAX_SNAPSHOTS` — nombre de snapshots conservés (0 = illimité)
 - `DATA_DIR`
 - `MQTT_*`
 - `DEVICE_NAME`
-- `ANALYSIS_*`
+- `GAUGE_CONFIG` — JSON généré par l'assistant de calibration (`/setup`), vide = stockage sans lecture
+- `MAX_DELTA_PERCENT` — écart maximal autorisé entre deux lectures consécutives (0 = désactivé)
 
-### Miroir caméra
+### Calibration
 
-Pour une image retournée en miroir par le device, régler `ANALYSIS_MIRROR_MODE` :
+La calibration se fait via l'interface web à `/setup` :
 
-- `none` (défaut)
-- `horizontal`
-- `vertical`
-- `both`
+1. Définir ≥ 2 zones de référence (drag sur l'image) pour la compensation de dérive
+2. Cliquer ≥ 3 points sur le périmètre du cadran pour ajuster le cercle
+3. Cliquer chaque graduation et saisir sa valeur
+4. Simuler une lecture et copier le snippet `GAUGE_CONFIG` dans le YAML de déploiement
 
 ### Mode upload debug
 
 `UPLOAD_DEBUG_MODE` contrôle la réponse de `POST /upload` :
 
-- `false` (défaut): retourne `200` immédiatement (`status=accepted`) puis lance l’analyse en post-traitement.
-- `true`: exécute l’analyse en synchrone et retourne le record complet avec détails OCR dans `analysis.source.ocr_labels`.
+- `false` (défaut): retourne `200` immédiatement (`status=accepted`) puis lance l'analyse en post-traitement.
+- `true`: exécute l'analyse en synchrone et retourne le record complet avec `percentage`, `confidence`, `needle_angle`, `drift`, `source`, `estimated`.

@@ -26,5 +26,6 @@ services:
       ANALYSIS_DEFAULT_LOW_ANGLE: 225
       ANALYSIS_DEFAULT_HIGH_ANGLE: 315
       ANALYSIS_EXPECTED_SPAN_DEG: 90
+      ANALYSIS_MIRROR_MODE: none # none | horizontal | vertical | both
     volumes:
       - ./data:/data

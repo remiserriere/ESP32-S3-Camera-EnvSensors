@@ -70,6 +70,8 @@ spec:
               value: "315"
             - name: ANALYSIS_EXPECTED_SPAN_DEG
               value: "90"
+            - name: ANALYSIS_MIRROR_MODE
+              value: "none"
           volumeMounts:
             - name: data
               mountPath: /data

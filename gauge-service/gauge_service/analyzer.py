@@ -50,7 +50,8 @@ class GaugeAnalyzer:
         if image is None:
             raise ValueError("Unable to decode image payload")
 
-        frame = self._resize_if_needed(image)
+        corrected = self._apply_mirror_correction(image)
+        frame = self._resize_if_needed(corrected)
         circle, circle_confidence, circle_estimated = self._detect_circle(frame)
         needle_angle, needle_confidence, needle_source = self._detect_needle(frame, circle)
         low_angle, high_angle, label_confidence, label_source, estimated = self._detect_scale(frame, circle)
@@ -82,6 +83,18 @@ class GaugeAnalyzer:
                 "scale_confidence": round(label_confidence, 3),
             },
         ).as_dict()
+
+    def _apply_mirror_correction(self, image: np.ndarray) -> np.ndarray:
+        mode = self.config.analysis_mirror_mode
+        if mode in {"none", ""}:
+            return image
+        if mode in {"horizontal", "h"}:
+            return cv2.flip(image, 1)
+        if mode in {"vertical", "v"}:
+            return cv2.flip(image, 0)
+        if mode in {"both", "hv", "vh"}:
+            return cv2.flip(image, -1)
+        return image
 
     def _resize_if_needed(self, image: np.ndarray) -> np.ndarray:
         height, width = image.shape[:2]

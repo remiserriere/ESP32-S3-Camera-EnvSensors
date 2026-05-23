@@ -41,3 +41,12 @@ Toutes les variables sont prévues pour être fixées directement dans `docker-c
 - `MQTT_*`
 - `DEVICE_NAME`
 - `ANALYSIS_*`
+
+### Miroir caméra
+
+Pour une image retournée en miroir par le device, régler `ANALYSIS_MIRROR_MODE` :
+
+- `none` (défaut)
+- `horizontal`
+- `vertical`
+- `both`

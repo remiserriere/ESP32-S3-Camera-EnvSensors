@@ -85,3 +85,23 @@ def test_analyzer_estimates_when_frame_is_partial() -> None:
     assert result['confidence'] > 10
     assert result['estimated'] is True
     assert 5 <= result['percentage'] <= 95
+
+
+def test_analyzer_supports_horizontal_mirror_mode() -> None:
+    config = ServiceConfig(
+        data_dir=Path('/tmp/gauge-test-3'),
+        analysis_expected_span_deg=90,
+        analysis_default_low_angle=225,
+        analysis_default_high_angle=315,
+        analysis_mirror_mode='horizontal',
+    )
+    analyzer = GaugeAnalyzer(config)
+
+    base = cv2.imdecode(np.frombuffer(_generate_gauge(percentage=60, rotation=14, brightness=0.9), dtype=np.uint8), cv2.IMREAD_COLOR)
+    mirrored = cv2.flip(base, 1)
+    ok, encoded = cv2.imencode('.jpg', mirrored)
+    assert ok
+
+    result = analyzer.analyze(encoded.tobytes())
+    assert result['confidence'] > 30
+    assert abs(result['percentage'] - 60) < 14

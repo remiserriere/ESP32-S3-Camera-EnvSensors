@@ -44,6 +44,7 @@ class ServiceConfig:
     analysis_default_low_angle: float = 225.0
     analysis_default_high_angle: float = 315.0
     analysis_expected_span_deg: float = 90.0
+    analysis_mirror_mode: str = "none"
 
     @classmethod
     def from_env(cls) -> "ServiceConfig":
@@ -68,6 +69,7 @@ class ServiceConfig:
             analysis_default_low_angle=_get_float("ANALYSIS_DEFAULT_LOW_ANGLE", 225.0),
             analysis_default_high_angle=_get_float("ANALYSIS_DEFAULT_HIGH_ANGLE", 315.0),
             analysis_expected_span_deg=_get_float("ANALYSIS_EXPECTED_SPAN_DEG", 90.0),
+            analysis_mirror_mode=(os.getenv("ANALYSIS_MIRROR_MODE", "none").strip().lower()),
         )
 
     @property

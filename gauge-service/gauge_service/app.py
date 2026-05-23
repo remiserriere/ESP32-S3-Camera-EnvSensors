@@ -125,6 +125,36 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     # Calibration API
     # ------------------------------------------------------------------
 
+    @app.get("/api/calibration/file")
+    def get_calibration_file() -> Any:
+        """Serve the raw calibration.json file so it can be opened in a browser
+        tab or downloaded, and used as a volume-mounted file in Docker / K8s."""
+        cal_file = service_config.calibration_file
+        if cal_file.exists():
+            try:
+                raw = cal_file.read_text(encoding="utf-8").strip()
+                if raw:
+                    return Response(
+                        raw,
+                        status=200,
+                        mimetype="application/json",
+                        headers={"Content-Disposition": "inline; filename=calibration.json"},
+                    )
+            except Exception as exc:
+                app.logger.warning("Failed to read calibration file: %s", exc)
+                return jsonify({"error": "Failed to read calibration file"}), 500
+        # Fall back to env var so the endpoint is still useful even without a
+        # persisted file (e.g. user injected GAUGE_CONFIG directly)
+        raw_env = service_config.gauge_config_json.strip()
+        if raw_env:
+            return Response(
+                raw_env,
+                status=200,
+                mimetype="application/json",
+                headers={"Content-Disposition": "inline; filename=calibration.json"},
+            )
+        return jsonify({"error": "No calibration available"}), 404
+
     @app.get("/api/calibration")
     def get_calibration() -> Any:
         cal = _load_calibration()

@@ -253,3 +253,52 @@ def test_upload_with_valid_calibration(tmp_path: Path) -> None:
     assert record['status'] == 'ready'
     assert record['analysis'] is not None
     assert 'percentage' in record['analysis']
+
+
+def test_calibration_file_endpoint_no_calibration(tmp_path: Path) -> None:
+    """GET /api/calibration/file returns 404 when no calibration is configured."""
+    config = _base_config(tmp_path, gauge_config_json="")
+    app = create_app(config)
+    client = app.test_client()
+
+    resp = client.get('/api/calibration/file')
+    assert resp.status_code == 404
+
+
+def test_calibration_file_endpoint_from_env_var(tmp_path: Path) -> None:
+    """GET /api/calibration/file returns the calibration JSON when set via env var."""
+    img_bytes = _generate_image()
+    cal_json = _make_calibration(img_bytes)
+    config = _base_config(tmp_path, gauge_config_json=cal_json)
+    app = create_app(config)
+    client = app.test_client()
+
+    resp = client.get('/api/calibration/file')
+    assert resp.status_code == 200
+    assert resp.content_type.startswith('application/json')
+    data = resp.get_json()
+    # The endpoint returns the raw calibration JSON – should be a valid object
+    assert 'circle' in data
+    assert 'ticks' in data
+
+
+def test_calibration_file_endpoint_from_saved_file(tmp_path: Path) -> None:
+    """GET /api/calibration/file returns the persisted calibration.json file."""
+    img_bytes = _generate_image()
+    cal_json = _make_calibration(img_bytes)
+    config = _base_config(tmp_path, gauge_config_json="")
+    app = create_app(config)
+    client = app.test_client()
+
+    # Save via API first
+    client.post(
+        '/api/calibration',
+        data=json.dumps({'config': cal_json}),
+        content_type='application/json',
+    )
+
+    resp = client.get('/api/calibration/file')
+    assert resp.status_code == 200
+    assert resp.content_type.startswith('application/json')
+    data = resp.get_json()
+    assert 'circle' in data

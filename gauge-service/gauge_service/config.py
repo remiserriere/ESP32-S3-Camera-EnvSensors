@@ -5,6 +5,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+_VALID_NEEDLE_METHODS = {"auto", "dark_radial", "hsv_color", "radial_sweep"}
+
+
+def _get_needle_method(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value not in _VALID_NEEDLE_METHODS:
+        return default
+    return value
+
+
 def _get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -48,6 +61,12 @@ class ServiceConfig:
     # true  → synchronous detailed analysis response on POST /upload
     # false → immediate HTTP 200 + async background analysis
     upload_debug_mode: bool = False
+    # Needle detection method used by the analyser.
+    # "auto"         → run all three methods and pick the most confident one.
+    # "dark_radial"  → darkness-score sweep (best for black / dark needles).
+    # "hsv_color"    → HSV saturation sweep (best for coloured needles).
+    # "radial_sweep" → variance-based sweep (generic fallback).
+    needle_detection_method: str = "auto"
 
     @classmethod
     def from_env(cls) -> "ServiceConfig":
@@ -70,6 +89,7 @@ class ServiceConfig:
             gauge_config_json=os.getenv("GAUGE_CONFIG", "").strip(),
             max_delta_percent=_get_float("MAX_DELTA_PERCENT", 0.0),
             upload_debug_mode=_get_bool("UPLOAD_DEBUG_MODE", False),
+            needle_detection_method=_get_needle_method("NEEDLE_DETECTION_METHOD", "auto"),
         )
 
     @property

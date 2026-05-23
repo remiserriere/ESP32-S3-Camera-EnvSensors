@@ -116,6 +116,22 @@
           Preview the calibration on the latest image, then export the calibration
           using one of the two methods below.
         </p>
+        <div style="margin-bottom:.7rem;">
+          <label for="detect-method" style="font-size:.85rem;color:#94a3b8;display:block;margin-bottom:.3rem;">
+            Needle detection method
+          </label>
+          <select id="detect-method" style="background:#0f172a;color:#f1f5f9;border:1px solid #334155;border-radius:6px;padding:.35rem .6rem;font-size:.88rem;width:100%;">
+            <option value="auto">auto (let the service choose the best method)</option>
+            <option value="dark_radial">dark_radial — darkness sweep (black / dark needles)</option>
+            <option value="hsv_color">hsv_color — HSV saturation sweep (coloured needles)</option>
+            <option value="radial_sweep">radial_sweep — variance sweep (generic fallback)</option>
+          </select>
+          <p class="hint" style="margin-top:.3rem;font-size:.8rem;">
+            The selected method will be used for <em>this simulation only</em>.
+            To apply it permanently, set <code>NEEDLE_DETECTION_METHOD=&lt;value&gt;</code>
+            in your deployment environment.
+          </p>
+        </div>
         <button class="btn btn-primary" onclick="runSimulation()">▶ Simulate reading</button>
         <div id="status-msg"></div>
         <img id="sim-img" style="display:none;" alt="simulation debug image">

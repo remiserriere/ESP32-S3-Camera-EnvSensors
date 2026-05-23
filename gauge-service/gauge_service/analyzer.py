@@ -67,8 +67,13 @@ class GaugeReader:
         image_bytes: bytes,
         calibration: GaugeCalibration,
         prev_percentage: float | None = None,
+        needle_method: str | None = None,
     ) -> dict[str, Any]:
         """Analyse *image_bytes* using *calibration*.
+
+        *needle_method* overrides ``config.needle_detection_method`` for this
+        call only (useful for the simulation endpoint so the UI can try each
+        method without changing the service configuration).
 
         Returns a dict suitable for storage in the record JSON.  Always
         returns a valid dict; errors are surfaced via the ``status`` field.
@@ -86,9 +91,10 @@ class GaugeReader:
         adj_cal = _shift_calibration(calibration, drift_dx, drift_dy)
 
         # ── 2. Needle detection ───────────────────────────────────────────
+        effective_method = needle_method or self.config.needle_detection_method
         circle = adj_cal.circle
         needle_angle, needle_confidence, needle_source = self._detect_needle(
-            image, adj_cal
+            image, adj_cal, method=effective_method
         )
 
         # ── 3. Interpolate value ──────────────────────────────────────────
@@ -270,14 +276,15 @@ class GaugeReader:
     # ------------------------------------------------------------------
 
     def _detect_needle(
-        self, image: np.ndarray, cal: GaugeCalibration
+        self, image: np.ndarray, cal: GaugeCalibration, method: str = "auto"
     ) -> tuple[float, float, str]:
         """Return (needle_angle_deg, confidence_0_1, source_str).
 
-        All three detection methods are run; the one with the highest
-        confidence is returned.  This makes the code work correctly for
-        both dark/black needles (dark_radial wins) and coloured needles
-        (hsv_color wins) without any manual configuration.
+        *method* controls which detection strategy is used:
+        - ``"auto"``         – run all three; return the most confident result.
+        - ``"dark_radial"``  – darkness-score radial sweep only.
+        - ``"hsv_color"``    – HSV saturation sweep only.
+        - ``"radial_sweep"`` – variance-based radial sweep only.
         """
         circle = cal.circle
         cx, cy, cr = circle.cx, circle.cy, circle.r
@@ -289,6 +296,19 @@ class GaugeReader:
         a_min = angles_vals[0][0] - _SWEEP_MARGIN_DEG
         a_max = angles_vals[-1][0] + _SWEEP_MARGIN_DEG
 
+        if method == "dark_radial":
+            angle, conf = _detect_needle_dark(image, cx, cy, cr, a_min, a_max)
+            return angle, conf, "dark_radial"
+
+        if method == "hsv_color":
+            angle, conf = _detect_needle_hsv(image, cx, cy, cr, a_min, a_max)
+            return angle, conf, "hsv_color"
+
+        if method == "radial_sweep":
+            angle, conf = _detect_needle_radial_sweep(image, cx, cy, cr, a_min, a_max)
+            return angle, conf, "radial_sweep"
+
+        # ── auto: run all three, pick the most confident ──────────────────
         # ── a. Dark-needle radial method (primary for black needles) ──────
         angle_dark, conf_dark = _detect_needle_dark(image, cx, cy, cr, a_min, a_max)
 

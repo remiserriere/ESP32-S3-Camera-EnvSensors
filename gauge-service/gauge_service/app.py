@@ -222,6 +222,12 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         raw = body.get("config", "")
         if not raw:
             return jsonify({"error": "Missing 'config' field"}), 400
+        # Optional needle detection method override for this simulation only.
+        # Accepted values: "auto", "dark_radial", "hsv_color", "radial_sweep".
+        from .config import _VALID_NEEDLE_METHODS
+        method_override = body.get("method", "").strip().lower() or None
+        if method_override and method_override not in _VALID_NEEDLE_METHODS:
+            return jsonify({"error": f"Invalid method '{method_override}'. Valid values: {sorted(_VALID_NEEDLE_METHODS)}"}), 400
         try:
             cal = GaugeCalibration.from_json(raw)
         except Exception as exc:
@@ -240,7 +246,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             return jsonify({"error": "Image file not found"}), 404
 
         try:
-            result = reader.analyze(image_bytes, cal)
+            result = reader.analyze(image_bytes, cal, needle_method=method_override)
         except Exception as exc:
             app.logger.error("Simulation analysis failed: %s", exc)
             return jsonify({"error": "Analysis failed"}), 500

@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from gauge_service.analyzer import GaugeReader, _interpolate, _detect_needle_hsv
+from gauge_service.analyzer import GaugeReader, _interpolate, _detect_needle_hsv, _warp_calibration
 from gauge_service.calibration import GaugeCalibration, CircleParams, PatchRegion, TickMark, fit_circle
 from gauge_service.config import ServiceConfig
 
@@ -256,3 +256,60 @@ def test_reader_draw_debug_image(tmp_path: Path) -> None:
     debug = reader.draw_debug_image(img, result, cal)
     assert isinstance(debug, bytes)
     assert len(debug) > 100
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _warp_calibration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_warp_calibration_identity() -> None:
+    cal = _build_calibration()
+    M = np.eye(2, 3, dtype=np.float64)
+    warped = _warp_calibration(cal, M)
+    assert abs(warped.circle.cx - cal.circle.cx) < 0.01
+    assert abs(warped.circle.cy - cal.circle.cy) < 0.01
+    assert abs(warped.ticks[0].px - cal.ticks[0].px) < 0.01
+    assert abs(warped.ticks[0].py - cal.ticks[0].py) < 0.01
+
+
+def test_warp_calibration_pure_translation() -> None:
+    cal = _build_calibration()
+    dx, dy = 7.0, -4.0
+    M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float64)
+    warped = _warp_calibration(cal, M)
+    assert abs(warped.circle.cx - (cal.circle.cx + dx)) < 0.01
+    assert abs(warped.circle.cy - (cal.circle.cy + dy)) < 0.01
+    assert abs(warped.ticks[0].px - (cal.ticks[0].px + dx)) < 0.01
+    assert abs(warped.ticks[0].py - (cal.ticks[0].py + dy)) < 0.01
+    # patches should also move
+    assert abs(warped.patches[0].x - (cal.patches[0].x + dx)) <= 1
+
+
+def test_warp_calibration_rotation_90deg() -> None:
+    # Build calibration with circle at origin so rotation is pure
+    cal = _build_calibration(cx=0.0, cy=0.0, r=100.0)
+    angle_rad = math.radians(90.0)
+    # 90° CCW rotation matrix (no translation)
+    M = np.array([
+        [math.cos(angle_rad), -math.sin(angle_rad), 0.0],
+        [math.sin(angle_rad),  math.cos(angle_rad), 0.0],
+    ], dtype=np.float64)
+    warped = _warp_calibration(cal, M)
+    # Circle centre at (0,0) stays at (0,0)
+    assert abs(warped.circle.cx) < 0.01
+    assert abs(warped.circle.cy) < 0.01
+    # A point (x, y) rotated 90° CCW → (-y, x)
+    t0 = cal.ticks[0]
+    assert abs(warped.ticks[0].px - (-t0.py)) < 0.1
+    assert abs(warped.ticks[0].py - t0.px) < 0.1
+
+
+def test_reader_result_includes_rotation_and_matrix(tmp_path: Path) -> None:
+    reader = GaugeReader(_default_config(tmp_path))
+    cal = _build_calibration()
+    img = _generate_gauge_image(needle_angle_deg=270)
+    result = reader.analyze(img, cal)
+    assert 'rotation_deg' in result['drift']
+    assert 'matrix' in result['drift']
+    M = result['drift']['matrix']
+    assert len(M) == 2 and len(M[0]) == 3

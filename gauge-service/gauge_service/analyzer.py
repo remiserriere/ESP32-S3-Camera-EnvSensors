@@ -85,10 +85,10 @@ class GaugeReader:
         # Resize to calibration dimensions so template coordinates match
         image = _resize_to(image, calibration.image_w, calibration.image_h)
 
-        # ── 1. Drift compensation ─────────────────────────────────────────
-        drift_dx, drift_dy, drift_confidence = self._compute_drift(image, calibration)
+        # ── 1. Drift + rotation compensation ─────────────────────────────
+        M, drift_confidence = self._compute_transform(image, calibration)
 
-        adj_cal = _shift_calibration(calibration, drift_dx, drift_dy)
+        adj_cal = _warp_calibration(calibration, M)
 
         # ── 2. Needle detection ───────────────────────────────────────────
         effective_method = needle_method or self.config.needle_detection_method
@@ -124,7 +124,12 @@ class GaugeReader:
             "confidence": round(confidence, 2),
             "estimated": estimated,
             "needle_angle": round(needle_angle, 2),
-            "drift": {"dx": round(drift_dx, 2), "dy": round(drift_dy, 2)},
+            "drift": {
+                "dx": round(float(M[0, 2]), 2),
+                "dy": round(float(M[1, 2]), 2),
+                "rotation_deg": round(math.degrees(math.atan2(float(M[1, 0]), float(M[0, 0]))), 3),
+                "matrix": M.tolist(),
+            },
             "source": needle_source,
             "warning": warning,
             "status": "ready",
@@ -139,9 +144,15 @@ class GaugeReader:
             raise ValueError("Unable to decode image payload")
         image = _resize_to(image, calibration.image_w, calibration.image_h)
 
-        dx = float(result.get("drift", {}).get("dx", 0.0))
-        dy = float(result.get("drift", {}).get("dy", 0.0))
-        adj_cal = _shift_calibration(calibration, dx, dy)
+        drift = result.get("drift", {})
+        dx = float(drift.get("dx", 0.0))
+        dy = float(drift.get("dy", 0.0))
+        rotation_deg_disp = float(drift.get("rotation_deg", 0.0))
+        matrix = drift.get("matrix")
+        if matrix is not None:
+            adj_cal = _warp_calibration(calibration, np.array(matrix, dtype=np.float64))
+        else:
+            adj_cal = _shift_calibration(calibration, dx, dy)
 
         out = image.copy()
         cx = int(round(adj_cal.circle.cx))
@@ -183,7 +194,7 @@ class GaugeReader:
         # Info box
         pct = result.get("percentage", "?")
         conf = result.get("confidence", "?")
-        drift_info = f"drift ({dx:+.1f},{dy:+.1f})"
+        drift_info = f"drift tx={dx:+.1f} ty={dy:+.1f} rot={rotation_deg_disp:+.2f}\u00b0"
         warning = result.get("warning") or ""
         lines = [
             f"Reading:    {pct}%  conf={conf}%",
@@ -212,18 +223,30 @@ class GaugeReader:
     # Internal: drift compensation
     # ------------------------------------------------------------------
 
-    def _compute_drift(
+    def _compute_transform(
         self, image: np.ndarray, cal: GaugeCalibration
-    ) -> tuple[float, float, float]:
-        """Return (dx, dy, confidence) translation offset from template matching.
+    ) -> tuple[np.ndarray, float]:
+        """Return (M_2x3, confidence) affine transform from calibration to current image.
 
-        *dx, dy* are the pixel amounts to ADD to calibration coordinates to
-        align them with the current image.
+        *M* is a 2×3 NumPy matrix mapping calibration pixel coordinates to
+        current-image pixel coordinates.  It handles translation **and**
+        in-plane rotation/scale caused by a camera tilt.
+
+        Strategy
+        --------
+        - 0 good matches  → identity transform (no correction).
+        - 1 good match    → pure translation (rotation cannot be estimated
+          from a single correspondence).
+        - ≥2 good matches → RANSAC partial-affine via
+          ``cv2.estimateAffinePartial2D`` (translation + rotation + isotropic
+          scale, 4 DOF).  Falls back to mean translation if the estimator
+          returns ``None``.
         """
         h, w = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        offsets: list[tuple[float, float]] = []
+        src_pts: list[tuple[float, float]] = []
+        dst_pts: list[tuple[float, float]] = []
         confidences: list[float] = []
 
         for patch in cal.patches:
@@ -249,27 +272,41 @@ class GaugeReader:
                 continue
 
             roi = gray[sy1:sy2, sx1:sx2]
-            result = cv2.matchTemplate(roi, tmpl_arr, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            match_result = cv2.matchTemplate(roi, tmpl_arr, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(match_result)
 
+            confidences.append(max_val)
             if max_val < _MATCH_THRESHOLD:
-                confidences.append(max_val)
                 continue
 
-            # max_loc is top-left of best match in roi coordinates
-            found_x = sx1 + max_loc[0]
-            found_y = sy1 + max_loc[1]
-            offsets.append((found_x - patch.x, found_y - patch.y))
-            confidences.append(max_val)
+            # Use the top-left corner of the matched template as the correspondence point
+            src_pts.append((float(patch.x), float(patch.y)))
+            dst_pts.append((float(sx1 + max_loc[0]), float(sy1 + max_loc[1])))
 
-        if not offsets:
-            avg_conf = float(np.mean(confidences)) if confidences else 0.0
-            return 0.0, 0.0, avg_conf
+        avg_conf = float(np.mean(confidences)) if confidences else 0.0
+        _identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
 
-        dx = float(np.mean([o[0] for o in offsets]))
-        dy = float(np.mean([o[1] for o in offsets]))
-        confidence = float(np.mean(confidences))
-        return dx, dy, confidence
+        if not src_pts:
+            return _identity, avg_conf
+
+        if len(src_pts) == 1:
+            # Only one patch matched: estimate translation only
+            dx = dst_pts[0][0] - src_pts[0][0]
+            dy = dst_pts[0][1] - src_pts[0][1]
+            M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float64)
+            return M, avg_conf
+
+        # ≥2 patches: estimate rotation + isotropic scale + translation (4 DOF)
+        src_arr = np.array(src_pts, dtype=np.float32)
+        dst_arr = np.array(dst_pts, dtype=np.float32)
+        M_est, _ = cv2.estimateAffinePartial2D(src_arr, dst_arr, method=cv2.RANSAC)
+        if M_est is None:
+            # Estimator failed: fall back to mean translation
+            dx = float(np.mean([d[0] - s[0] for s, d in zip(src_pts, dst_pts)]))
+            dy = float(np.mean([d[1] - s[1] for s, d in zip(src_pts, dst_pts)]))
+            return np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float64), avg_conf
+
+        return M_est.astype(np.float64), avg_conf
 
     # ------------------------------------------------------------------
     # Internal: needle detection
@@ -367,6 +404,51 @@ def _shift_calibration(cal: GaugeCalibration, dx: float, dy: float) -> GaugeCali
         for p in cal.patches
     ]
     from .calibration import GaugeCalibration as GC
+    return GC(
+        image_w=cal.image_w,
+        image_h=cal.image_h,
+        patches=new_patches,
+        circle=new_circle,
+        ticks=new_ticks,
+    )
+
+
+def _warp_calibration(cal: GaugeCalibration, M: np.ndarray) -> GaugeCalibration:
+    """Return a copy of *cal* with all pixel coordinates transformed by the
+    2×3 affine matrix *M*.
+
+    Unlike :func:`_shift_calibration`, this handles not only translation but
+    also in-plane rotation and isotropic scale (all four DOF estimated by
+    ``cv2.estimateAffinePartial2D``).  The circle radius is left unchanged
+    because a small camera tilt does not materially change the apparent radius.
+    """
+    from .calibration import CircleParams, TickMark, PatchRegion
+    from .calibration import GaugeCalibration as GC
+
+    def _pt(x: float, y: float) -> tuple[float, float]:
+        nx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+        ny = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+        return float(nx), float(ny)
+
+    ncx, ncy = _pt(cal.circle.cx, cal.circle.cy)
+    new_circle = CircleParams(cx=ncx, cy=ncy, r=cal.circle.r)
+
+    new_ticks = []
+    for t in cal.ticks:
+        nx, ny = _pt(t.px, t.py)
+        new_ticks.append(TickMark(px=nx, py=ny, value=t.value))
+
+    new_patches = []
+    for p in cal.patches:
+        nx, ny = _pt(float(p.x), float(p.y))
+        new_patches.append(PatchRegion(
+            x=int(round(nx)),
+            y=int(round(ny)),
+            w=p.w,
+            h=p.h,
+            template_b64=p.template_b64,
+        ))
+
     return GC(
         image_w=cal.image_w,
         image_h=cal.image_h,
@@ -630,7 +712,7 @@ def _error_result(msg: str) -> dict[str, Any]:
         "confidence": 0.0,
         "estimated": True,
         "needle_angle": None,
-        "drift": {"dx": 0.0, "dy": 0.0},
+        "drift": {"dx": 0.0, "dy": 0.0, "rotation_deg": 0.0, "matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]},
         "source": "error",
         "warning": msg,
         "status": "failed",

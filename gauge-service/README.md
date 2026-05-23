@@ -58,3 +58,55 @@ La calibration se fait via l'interface web à `/setup` :
 
 - `false` (défaut): retourne `200` immédiatement (`status=accepted`) puis lance l'analyse en post-traitement.
 - `true`: exécute l'analyse en synchrone et retourne le record complet avec `percentage`, `confidence`, `needle_angle`, `drift`, `source`, `estimated`.
+
+## Image Docker
+
+L'image est publiée automatiquement sur [GitHub Container Registry (GHCR)](https://ghcr.io) :
+
+```bash
+# Dernière version stable (depuis main)
+docker pull ghcr.io/remiserriere/gauge-service:latest
+
+# Version spécifique (tag Git)
+docker pull ghcr.io/remiserriere/gauge-service:v1.2.3
+```
+
+### Exemple docker-compose
+
+```yaml
+services:
+  gauge-service:
+    image: ghcr.io/remiserriere/gauge-service:latest
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATA_DIR=/data
+      - MAX_SNAPSHOTS=100
+      - MQTT_HOST=192.168.1.10
+      - MQTT_PORT=1883
+      - DEVICE_NAME=gauge
+      - GAUGE_CONFIG={}        # remplacer par le JSON généré via /setup
+      - UPLOAD_DEBUG_MODE=false
+    restart: unless-stopped
+```
+
+## CI / CD
+
+Trois workflows GitHub Actions sont en place :
+
+| Workflow | Fichier | Déclencheur | Ce qu'il fait |
+|---|---|---|---|
+| **CI – Gauge service** | `.github/workflows/gauge-service.yml` | Push / PR sur `gauge-service/**` | Tests pytest + push image `latest` sur GHCR (branche main uniquement) |
+| **Release** | `.github/workflows/release.yml` | Push d'un tag `v*` | Build firmware ESP32 + GitHub Release + push image Docker versionnée sur GHCR |
+| **CI – Build Firmware** | `.github/workflows/ci.yml` | Push / PR sur `src/**`, `platformio.ini`… | Build firmware uniquement (ne se déclenche PAS sur les modifs gauge-service) |
+
+### Tests
+
+```bash
+cd gauge-service
+pip install -r requirements.txt
+PYTHONPATH=gauge-service pytest gauge-service/tests -q
+```
+

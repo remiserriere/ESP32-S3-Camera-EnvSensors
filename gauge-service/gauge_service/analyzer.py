@@ -162,9 +162,25 @@ class GaugeReader:
         font = cv2.FONT_HERSHEY_SIMPLEX
         fs = max(0.45, min(1.3, w / 900.0))
 
-        # Reference patches (blue rectangles, shifted by drift)
-        for p in adj_cal.patches:
-            cv2.rectangle(out, (p.x, p.y), (p.x + p.w, p.y + p.h), (220, 120, 0), 2)
+        # Reference patches – draw as rotated rectangles when a matrix is available
+        M_draw = np.array(matrix, dtype=np.float64) if matrix is not None else None
+        for p in calibration.patches:
+            # The 4 corners of the original (calibration) patch rectangle
+            corners = np.array([
+                [p.x,        p.y       ],
+                [p.x + p.w,  p.y       ],
+                [p.x + p.w,  p.y + p.h ],
+                [p.x,        p.y + p.h ],
+            ], dtype=np.float64)
+            if M_draw is not None:
+                # Apply affine transform to each corner: [x', y'] = M * [x, y, 1]^T
+                ones = np.ones((4, 1), dtype=np.float64)
+                pts_h = np.hstack([corners, ones])  # (4, 3)
+                transformed = (M_draw @ pts_h.T).T   # (4, 2)
+            else:
+                transformed = corners
+            pts_int = transformed.round().astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(out, [pts_int], isClosed=True, color=(220, 120, 0), thickness=2)
 
         # Gauge circle
         cv2.circle(out, (cx, cy), cr, (30, 200, 30), 2)

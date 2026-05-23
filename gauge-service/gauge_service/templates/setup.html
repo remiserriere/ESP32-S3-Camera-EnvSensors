@@ -39,7 +39,7 @@
     .status-ok  { color:#34d399; }
     .status-err { color:#f87171; }
     .status-info{ color:#60a5fa; }
-    #yaml-out { width:100%; font-family:monospace; font-size:.75rem; background:#0f172a; color:#a3e635; border:1px solid #334155; border-radius:4px; padding:.5rem; resize:vertical; height:140px; }
+    .mono-out { width:100%; font-family:monospace; font-size:.75rem; background:#0f172a; color:#a3e635; border:1px solid #334155; border-radius:4px; padding:.5rem; resize:vertical; }
     #sim-img { max-width:100%; border-radius:4px; margin:.5rem 0; }
     .badge { display:inline-block; padding:.1rem .4rem; border-radius:999px; font-size:.72rem; font-weight:700; margin-left:.3rem; }
     .badge-ok  { background:#064e3b; color:#6ee7b7; }
@@ -138,31 +138,43 @@
         <div id="sim-result" style="font-size:.85rem;margin:.5rem 0;"></div>
         <hr style="border-color:#334155;margin:1rem 0;">
 
-        <!-- Save + open file -->
+        <!-- Option A -->
         <h3 style="font-size:.95rem;margin:.4rem 0;">Option A – Volume file</h3>
-        <p class="hint">
-          Save the calibration on the server, then mount
-          <code>calibration.json</code> as a read-only volume (no env var needed).
-        </p>
-        <button class="btn btn-success" id="save-btn" onclick="saveCalibration()">💾 Save calibration to server</button>
-        <a id="file-btn" class="btn btn-sec" href="/api/calibration/file" target="_blank"
-           style="margin-left:.5rem;display:none;">📄 Open calibration.json</a>
-        <div id="save-status" style="margin-top:.5rem;font-size:.85rem;"></div>
-        <div id="volume-snippet-box" style="display:none;margin-top:.8rem;">
-          <p class="hint" style="margin-bottom:.3rem;">Mount snippet to add in your deployment:</p>
-          <textarea id="volume-out" readonly style="height:9rem;font-size:.78rem;"></textarea>
-          <button class="btn btn-sec" style="margin-top:.3rem;" onclick="copySnippet('volume-out','copy-vol-ok')">📋 Copy</button>
-          <span id="copy-vol-ok" style="font-size:.8rem;color:#34d399;margin-left:.5rem;display:none;">Copied!</span>
+        <p class="hint">Mount <code>calibration.json</code> as a read-only volume (no env var needed).</p>
+
+        <p style="font-size:.83rem;color:#94a3b8;margin:.3rem 0 .2rem;">File content:</p>
+        <textarea class="mono-out" id="cal-json-out" readonly style="height:8rem;"></textarea>
+        <div style="display:flex;gap:.5rem;align-items:center;margin-top:.4rem;flex-wrap:wrap;">
+          <button class="btn btn-sec" onclick="previewCalibration()">↗ Preview in new tab</button>
+          <button class="btn btn-success" id="save-btn" onclick="saveCalibration()">💾 Save to server</button>
+          <a id="file-btn" class="btn btn-sec" href="/api/calibration/file" target="_blank" style="display:none;">📄 Open saved file</a>
         </div>
+        <div id="save-status" style="margin-top:.5rem;font-size:.85rem;"></div>
+
+        <p style="font-size:.83rem;color:#94a3b8;margin:.8rem 0 .2rem;">
+          <strong>Docker Compose</strong> — remove the <code>GAUGE_CONFIG</code> env var, add the following <code>volumes</code> entry:
+        </p>
+        <textarea class="mono-out" id="vol-compose-out" readonly style="height:3.5rem;"></textarea>
+
+        <p style="font-size:.83rem;color:#94a3b8;margin:.8rem 0 .4rem;"><strong>Kubernetes (K8S/K3S)</strong></p>
+        <p style="font-size:.8rem;color:#64748b;margin:.2rem 0 .2rem;">1. ConfigMap creation:</p>
+        <textarea class="mono-out" id="vol-k8s-configmap-out" readonly style="height:3rem;"></textarea>
+        <p style="font-size:.8rem;color:#64748b;margin:.5rem 0 .2rem;">2. Add to deployment <code>volumeMounts</code>:</p>
+        <textarea class="mono-out" id="vol-k8s-mounts-out" readonly style="height:5rem;"></textarea>
+        <p style="font-size:.8rem;color:#64748b;margin:.5rem 0 .2rem;">3. Add to deployment <code>volumes</code>:</p>
+        <textarea class="mono-out" id="vol-k8s-vols-out" readonly style="height:4rem;"></textarea>
 
         <hr style="border-color:#334155;margin:1rem 0;">
 
-        <!-- YAML env var snippet -->
+        <!-- Option B -->
         <h3 style="font-size:.95rem;margin:.4rem 0;">Option B – Environment variable</h3>
-        <p class="hint">Paste the <code>GAUGE_CONFIG</code> value into the <code>environment:</code> section:</p>
-        <textarea id="yaml-out" readonly></textarea>
-        <button class="btn btn-sec" style="margin-top:.4rem;" onclick="copySnippet('yaml-out','copy-env-ok')">📋 Copy</button>
-        <span id="copy-env-ok" style="font-size:.8rem;color:#34d399;margin-left:.5rem;display:none;">Copied!</span>
+        <p class="hint">Paste the <code>GAUGE_CONFIG</code> value into your deployment:</p>
+
+        <p style="font-size:.83rem;color:#94a3b8;margin:.3rem 0 .2rem;">Docker Compose — <code>environment:</code> section:</p>
+        <textarea class="mono-out" id="yaml-compose-out" readonly style="height:3.5rem;"></textarea>
+
+        <p style="font-size:.83rem;color:#94a3b8;margin:.8rem 0 .2rem;">Kubernetes (K8S/K3S) — ConfigMap:</p>
+        <textarea class="mono-out" id="yaml-k8s-out" readonly style="height:6rem;"></textarea>
       </div>
     </div><!-- /panel-content -->
 
@@ -257,8 +269,6 @@ function loadExistingCalibration() {
     buildYaml();
     // If a calibration already exists on server, show the file button immediately
     document.getElementById('file-btn').style.display = 'inline-flex';
-    buildVolumeSnippet();
-    document.getElementById('volume-snippet-box').style.display = 'block';
     redraw();
   } catch(e) { console.warn('Could not parse existing calibration', e); }
 }
@@ -535,44 +545,63 @@ function buildCalibrationObj() {
 function buildYaml() {
   const cal = buildCalibrationObj();
   const json = JSON.stringify(cal);
-  const yaml = `# docker-compose.yml – Option B: environment variable\nenvironment:\n  GAUGE_CONFIG: '${json}'\n\n# kubernetes ConfigMap – Option B:\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: gauge-config\ndata:\n  GAUGE_CONFIG: |\n    ${json}`;
-  document.getElementById('yaml-out').value = yaml;
+  const jsonPretty = JSON.stringify(cal, null, 2);
+
+  // Option A – file content
+  const elJson = document.getElementById('cal-json-out');
+  if (elJson) elJson.value = jsonPretty;
+
+  // Option B – Docker Compose env
+  const elCompose = document.getElementById('yaml-compose-out');
+  if (elCompose) elCompose.value = `    GAUGE_CONFIG: '${json}'`;
+
+  // Option B – K8S ConfigMap
+  const elK8s = document.getElementById('yaml-k8s-out');
+  if (elK8s) elK8s.value =
+`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gauge-config
+data:
+  GAUGE_CONFIG: |
+    ${json}`;
+
+  buildVolumeSnippet();
 }
 
 function buildVolumeSnippet() {
-  const snippet =
-`# docker-compose.yml – Option A: volume file
-# (remove the GAUGE_CONFIG env var when using this)
-volumes:
-  - ./calibration.json:/data/calibration.json:ro
+  const elVolCompose = document.getElementById('vol-compose-out');
+  if (elVolCompose) elVolCompose.value =
+`    volumes:
+      - ./calibration.json:/data/calibration.json:ro`;
 
-# kubernetes – Option A: ConfigMap volume
-# 1. Save calibration content into a ConfigMap:
-#    kubectl create configmap gauge-calibration \\
-#      --from-file=calibration.json=/path/to/local/calibration.json
-# 2. Add to your Deployment spec → containers → volumeMounts:
-#    - name: calibration
-#      mountPath: /data/calibration.json
-#      subPath: calibration.json
-#      readOnly: true
-# 3. Add to Deployment spec → volumes:
-#    - name: calibration
-#      configMap:
-#        name: gauge-calibration`;
-  document.getElementById('volume-out').value = snippet;
+  const elConfigMap = document.getElementById('vol-k8s-configmap-out');
+  if (elConfigMap) elConfigMap.value =
+`kubectl create configmap gauge-calibration \\
+  --from-file=calibration.json=/path/to/local/calibration.json`;
+
+  const elMounts = document.getElementById('vol-k8s-mounts-out');
+  if (elMounts) elMounts.value =
+`        volumeMounts:
+          - name: calibration
+            mountPath: /data/calibration.json
+            subPath: calibration.json
+            readOnly: true`;
+
+  const elVols = document.getElementById('vol-k8s-vols-out');
+  if (elVols) elVols.value =
+`      volumes:
+        - name: calibration
+          configMap:
+            name: gauge-calibration`;
 }
 
-function copySnippet(textareaId, okSpanId) {
-  const ta = document.getElementById(textareaId);
-  ta.select();
-  navigator.clipboard.writeText(ta.value).catch(() => document.execCommand('copy'));
-  const ok = document.getElementById(okSpanId);
-  ok.style.display = 'inline';
-  setTimeout(() => ok.style.display = 'none', 2000);
+function previewCalibration() {
+  const cal = buildCalibrationObj();
+  const json = JSON.stringify(cal, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  window.open(URL.createObjectURL(blob), '_blank');
 }
-
-// Legacy alias kept in case other code paths call it
-function copyYaml() { copySnippet('yaml-out', 'copy-env-ok'); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Simulation (step 4)
@@ -639,10 +668,9 @@ async function saveCalibration() {
     if (resp.ok) {
       st.style.color = '#34d399';
       st.textContent = '✅ Calibration saved to server (calibration.json).';
-      // Show "Open file" button and volume mount snippet
+      // Show "Open saved file" button and refresh snippets
       document.getElementById('file-btn').style.display = 'inline-flex';
       buildVolumeSnippet();
-      document.getElementById('volume-snippet-box').style.display = 'block';
       btn.disabled = false;
     } else {
       st.style.color = '#f87171';

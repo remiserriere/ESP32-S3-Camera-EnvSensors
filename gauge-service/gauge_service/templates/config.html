@@ -399,6 +399,7 @@
 <div class="action-bar">
   <button class="btn btn-primary" onclick="saveConfig(false)">💾 Save</button>
   <button class="btn btn-success" onclick="saveConfig(true)">💾 Save &amp; Reboot</button>
+  <button class="btn btn-sec" onclick="previewConfig()">↗ Preview JSON</button>
   <a href="/api/config/file" target="_blank" class="btn btn-sec">📄 Open service_config.json</a>
   <span id="save-status"></span>
 </div>
@@ -422,6 +423,16 @@ function collectFormData() {
     }
   });
   return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preview config JSON in a new tab (without saving)
+// ─────────────────────────────────────────────────────────────────────────────
+function previewConfig() {
+  const data = collectFormData();
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  window.open(URL.createObjectURL(blob), '_blank');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

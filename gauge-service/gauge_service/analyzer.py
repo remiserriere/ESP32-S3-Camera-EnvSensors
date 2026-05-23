@@ -206,8 +206,8 @@ class GaugeAnalyzer:
         return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
     def _detect_circle(self, image: np.ndarray) -> tuple[tuple[float, float, float], float, bool]:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (9, 9), 2)
+        gray_raw = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray_raw, (9, 9), 2)
         red_circle = self._detect_red_arc_circle(image)
         circles = cv2.HoughCircles(
             gray,
@@ -224,23 +224,29 @@ class GaugeAnalyzer:
             circle = max(circles[0], key=lambda item: item[2])
             hough_circle = (float(circle[0]), float(circle[1]), float(circle[2]))
 
+        # Use gray_raw (unblurred) for hub detection: sharper dark regions give a better threshold.
+        # Radius: if the red-arc circle's radius greatly exceeds the Hough estimate (>20%), it is
+        # likely inflated by the red needle pixels rather than representing the gauge face.
+        # In that case use the Hough radius directly; otherwise blend equally.
+        # Hub: it IS the needle pivot → give it dominant weight for the center once found.
         if red_circle and hough_circle:
             rx, ry, rr = red_circle
             hx, hy, hr = hough_circle
-            blended = (hx * 0.35 + rx * 0.65, hy * 0.35 + ry * 0.65, hr * 0.4 + rr * 0.6)
-            hub = self._detect_black_hub_center(gray, blended)
+            blended_r = hr if rr > hr * 1.2 else hr * 0.5 + rr * 0.5
+            blended = (hx * 0.35 + rx * 0.65, hy * 0.35 + ry * 0.65, blended_r)
+            hub = self._detect_black_hub_center(gray_raw, blended)
             if hub is not None:
-                blended = (blended[0] * 0.7 + hub[0] * 0.3, blended[1] * 0.7 + hub[1] * 0.3, blended[2])
+                blended = (blended[0] * 0.30 + hub[0] * 0.70, blended[1] * 0.30 + hub[1] * 0.70, blended[2])
             return (float(blended[0]), float(blended[1]), float(blended[2])), 0.95, False
         if red_circle:
-            hub = self._detect_black_hub_center(gray, red_circle)
+            hub = self._detect_black_hub_center(gray_raw, red_circle)
             if hub is not None:
-                red_circle = (red_circle[0] * 0.68 + hub[0] * 0.32, red_circle[1] * 0.68 + hub[1] * 0.32, red_circle[2])
+                red_circle = (red_circle[0] * 0.30 + hub[0] * 0.70, red_circle[1] * 0.30 + hub[1] * 0.70, red_circle[2])
             return (float(red_circle[0]), float(red_circle[1]), float(red_circle[2])), 0.9, False
         if hough_circle:
-            hub = self._detect_black_hub_center(gray, hough_circle)
+            hub = self._detect_black_hub_center(gray_raw, hough_circle)
             if hub is not None:
-                hough_circle = (hough_circle[0] * 0.76 + hub[0] * 0.24, hough_circle[1] * 0.76 + hub[1] * 0.24, hough_circle[2])
+                hough_circle = (hough_circle[0] * 0.30 + hub[0] * 0.70, hough_circle[1] * 0.30 + hub[1] * 0.70, hough_circle[2])
             return (float(hough_circle[0]), float(hough_circle[1]), float(hough_circle[2])), 0.86, False
 
         edges = cv2.Canny(gray, 50, 150)
@@ -263,10 +269,51 @@ class GaugeAnalyzer:
         if points.shape[0] < 120:
             return None
         pts = np.array([[float(col), float(row)] for row, col in points], dtype=np.float32)
-        (x, y), r = cv2.minEnclosingCircle(pts)
+        # Algebraic least-squares circle fit is more robust than minEnclosingCircle:
+        # minEnclosingCircle is dominated by the single farthest outlier point (e.g. needle tip),
+        # whereas the algebraic fit minimises squared distances across all points.
+        # max_r prevents degenerate solutions when red pixels are nearly collinear (e.g. needle only).
+        max_r = min(image.shape[:2]) * 0.48
+        result = self._fit_circle_algebraic(pts, max_r=max_r)
+        if result is not None:
+            x, y, r = result
+        else:
+            (ex, ey), er = cv2.minEnclosingCircle(pts)
+            x, y, r = float(ex), float(ey), float(er)
         if r <= min(image.shape[:2]) * 0.1:
             return None
         return float(x), float(y), float(r)
+
+    def _fit_circle_algebraic(self, pts: np.ndarray, max_r: float | None = None) -> tuple[float, float, float] | None:
+        """Algebraic least-squares circle fit to 2-D points (columns: x, y).
+
+        Solves the linearised equation  2·cx·x + 2·cy·y + (r²−cx²−cy²) = x²+y²
+        in the least-squares sense.  Much less sensitive to outliers than
+        minEnclosingCircle which is anchored to the single farthest point.
+        Returns None if the fit is degenerate (e.g. nearly collinear points
+        yield r > max_r) or numerically invalid.
+        """
+        n = len(pts)
+        if n < 10:
+            return None
+        # Sample for speed on large point clouds.
+        rng = np.random.default_rng(42)
+        sample = pts[rng.choice(n, min(n, 800), replace=False)]
+        x, y = sample[:, 0], sample[:, 1]
+        A = np.column_stack([2.0 * x, 2.0 * y, np.ones(len(sample))])
+        b = x ** 2 + y ** 2
+        try:
+            result, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+        except np.linalg.LinAlgError:
+            return None
+        cx, cy = float(result[0]), float(result[1])
+        r_sq = float(result[2]) + cx * cx + cy * cy
+        if r_sq <= 0.0:
+            return None
+        r = math.sqrt(r_sq)
+        if max_r is not None and r > max_r:
+            return None
+        return cx, cy, r
 
     def _detect_black_hub_center(self, gray: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float] | None:
         cx, cy, r = circle
@@ -497,6 +544,10 @@ class GaugeAnalyzer:
             x, y, w, h = cv2.boundingRect(contour)
             area = w * h
             if area < image.shape[0] * image.shape[1] * 0.001 or area > image.shape[0] * image.shape[1] * 0.07:
+                continue
+            # Reject degenerate contours that are far too thin to contain printed digits
+            # (e.g. edge artifacts from sharp brightness transitions produce tall, thin strips).
+            if w < 0.12 * h or h < 0.12 * w:
                 continue
             center_x = x + w / 2.0
             center_y = y + h / 2.0

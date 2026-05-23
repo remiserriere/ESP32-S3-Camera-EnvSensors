@@ -61,6 +61,7 @@ class GaugeAnalyzer:
 
         confidence = max(5.0, min(99.0, (circle_confidence * 0.25 + needle_confidence * 0.45 + label_confidence * 0.30) * 100.0))
         estimated = estimated or circle_estimated or needle_source != "red_line"
+        estimated = estimated or abs(span["span"] - self.config.analysis_expected_span_deg) > max(12.0, self.config.analysis_expected_span_deg * 0.15)
 
         return DetectionResult(
             percentage=float(np.clip(percentage, self.config.analysis_low_percent, self.config.analysis_high_percent)),
@@ -183,6 +184,10 @@ class GaugeAnalyzer:
             low_angle = self._normalize_angle(high["angle"] - self.config.analysis_expected_span_deg)
             return low_angle, high["angle"], min(0.7, high["score"]), "high_label+estimate", True
 
+        tick_detection = self._detect_tick_endpoints(image, circle)
+        if tick_detection is not None:
+            return tick_detection
+
         return (
             self.config.analysis_default_low_angle,
             self.config.analysis_default_high_angle,
@@ -190,6 +195,89 @@ class GaugeAnalyzer:
             "configured_defaults",
             True,
         )
+
+    def _detect_tick_endpoints(self, image: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float, float, str, bool] | None:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, dark = cv2.threshold(gray, 175, 255, cv2.THRESH_BINARY_INV)
+        angles: list[float] = []
+        strengths: list[float] = []
+        cx, cy, radius = circle
+
+        for degree in range(360):
+            angle = math.radians(degree)
+            samples: list[float] = []
+            for radial in np.linspace(radius * 0.70, radius * 0.92, 32):
+                x = int(round(cx + math.cos(angle) * radial))
+                y = int(round(cy - math.sin(angle) * radial))
+                if 0 <= x < dark.shape[1] and 0 <= y < dark.shape[0]:
+                    samples.append(float(dark[y, x]) / 255.0)
+            if samples:
+                angles.append(float(degree))
+                strengths.append(float(sum(samples) / len(samples)))
+
+        profile = np.array(strengths, dtype=np.float32)
+        if profile.size == 0:
+            return None
+
+        kernel = np.ones(9, dtype=np.float32) / 9.0
+        profile = np.convolve(np.r_[profile[-4:], profile, profile[:4]], kernel, mode="valid")
+        threshold = max(0.08, float(np.percentile(profile, 94)))
+        strong = np.where(profile >= threshold)[0]
+        if len(strong) == 0:
+            return None
+
+        clusters = self._cluster_angles(strong.tolist(), profile)
+        if len(clusters) >= 2:
+            best_pair: tuple[dict, dict] | None = None
+            best_score = -1e9
+            for idx, first in enumerate(clusters):
+                for second in clusters[idx + 1:]:
+                    span = min(
+                        self._normalize_angle(second["angle"] - first["angle"]),
+                        self._normalize_angle(first["angle"] - second["angle"]),
+                    )
+                    score = (first["strength"] + second["strength"]) - abs(span - self.config.analysis_expected_span_deg) / 180.0
+                    if score > best_score:
+                        best_score = score
+                        best_pair = (first, second)
+            if best_pair is not None:
+                confidence = min(0.78, 0.45 + (best_pair[0]["strength"] + best_pair[1]["strength"]) / 4.0)
+                return best_pair[0]["angle"], best_pair[1]["angle"], confidence, "tick_arc", False
+
+        if len(clusters) == 1:
+            angle = clusters[0]["angle"]
+            estimated_angle = self._normalize_angle(angle + self.config.analysis_expected_span_deg)
+            confidence = min(0.55, 0.25 + clusters[0]["strength"] / 3.0)
+            return angle, estimated_angle, confidence, "tick_arc+estimate", True
+
+        return None
+
+    def _cluster_angles(self, strong_angles: list[int], profile: np.ndarray) -> list[dict]:
+        if not strong_angles:
+            return []
+        angles = sorted(set(strong_angles))
+        groups: list[list[int]] = [[angles[0]]]
+        for angle in angles[1:]:
+            if angle - groups[-1][-1] <= 8:
+                groups[-1].append(angle)
+            else:
+                groups.append([angle])
+        if len(groups) > 1 and (groups[0][0] + 360) - groups[-1][-1] <= 8:
+            groups[0] = groups[-1] + groups[0]
+            groups.pop()
+
+        clusters: list[dict] = []
+        for group in groups:
+            weights = np.array([profile[idx % 360] for idx in group], dtype=np.float32)
+            weighted_angle = float(np.average(np.array(group, dtype=np.float32) % 360.0, weights=weights))
+            clusters.append(
+                {
+                    "angle": self._normalize_angle(weighted_angle),
+                    "strength": float(weights.mean()) if weights.size else 0.0,
+                    "count": len(group),
+                }
+            )
+        return clusters
 
     def _detect_label_candidates(self, image: np.ndarray, circle: tuple[float, float, float]) -> list[dict]:
         cx, cy, radius = circle

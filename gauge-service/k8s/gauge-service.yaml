@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gauge-service-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gauge-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gauge-service
+  template:
+    metadata:
+      labels:
+        app: gauge-service
+    spec:
+      containers:
+        - name: gauge-service
+          image: ghcr.io/remiserriere/esp32-s3-camera-envsensors-gauge-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+          env:
+            - name: APP_HOST
+              value: 0.0.0.0
+            - name: APP_PORT
+              value: "8081"
+            - name: DATA_DIR
+              value: /data
+            - name: MAX_SNAPSHOTS
+              value: "50"
+            - name: SERVE_HISTORY_LIMIT
+              value: "100"
+            - name: DEVICE_NAME
+              value: Gaz Tank Gauge
+            - name: MQTT_ENABLED
+              value: "true"
+            - name: MQTT_HOST
+              value: mqtt.local
+            - name: MQTT_PORT
+              value: "1883"
+            - name: MQTT_USERNAME
+              value: homeassistant
+            - name: MQTT_PASSWORD
+              value: changeme
+            - name: MQTT_USE_SSL
+              value: "false"
+            - name: MQTT_CLIENT_ID
+              value: gaz-tank-gauge-service
+            - name: MQTT_TOPIC_ROOT
+              value: home/gaz_tank_gauge
+            - name: HA_DISCOVERY_PREFIX
+              value: homeassistant
+            - name: ANALYSIS_LOW_PERCENT
+              value: "5"
+            - name: ANALYSIS_HIGH_PERCENT
+              value: "95"
+            - name: ANALYSIS_DEFAULT_LOW_ANGLE
+              value: "225"
+            - name: ANALYSIS_DEFAULT_HIGH_ANGLE
+              value: "315"
+            - name: ANALYSIS_EXPECTED_SPAN_DEG
+              value: "90"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gauge-service-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gauge-service
+spec:
+  selector:
+    app: gauge-service
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081

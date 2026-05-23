@@ -1,0 +1,47 @@
+name: CI – Web Services
+
+on:
+  push:
+    branches: [ main, develop, 'feature/**', 'fix/**' ]
+    paths:
+      - 'web-server/**'
+      - 'gauge-service/**'
+      - '.github/workflows/web-services.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'web-server/**'
+      - 'gauge-service/**'
+      - '.github/workflows/web-services.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test Flask services
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install --upgrade pip && pip install -r gauge-service/requirements.txt
+
+      - name: Syntax check legacy receiver
+        run: python -m py_compile web-server/server.py
+
+      - name: Run gauge service tests
+        env:
+          PYTHONPATH: gauge-service
+        run: pytest gauge-service/tests -q
+
+      - name: Build gauge-service Docker image
+        run: docker build -t gauge-service:test ./gauge-service

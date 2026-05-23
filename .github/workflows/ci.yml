@@ -3,14 +3,20 @@ name: CI – Build Firmware
 on:
   push:
     branches: [ main, develop, 'feature/**', 'fix/**' ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'platformio.ini'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
   pull_request:
     branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'platformio.ini'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,7 +31,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history so that git describe --tags works for version injection
           fetch-depth: 0
 
       - name: Set up Python
@@ -54,7 +59,6 @@ jobs:
       - name: Build firmware
         run: pio run
         env:
-          # Use short SHA for a concise, still-traceable CI version identifier
           FIRMWARE_VERSION: ci-${{ steps.sha.outputs.SHORT_SHA }}
 
       - name: Upload firmware artifact

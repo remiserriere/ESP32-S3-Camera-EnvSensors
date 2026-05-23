@@ -1,12 +1,4 @@
-name: Release – Build & Publish Firmware
-
-# Triggered by pushing a semantic version tag, e.g.:
-#   git tag v1.2.3 && git push origin v1.2.3
-#
-# The workflow will:
-#   1. Build the firmware with the version embedded
-#   2. Generate an OTA manifest (manifest.json)
-#   3. Create a GitHub Release and attach the .bin, .elf, and manifest
+name: Release – Build & Publish Firmware and Gauge Service
 
 on:
   push:
@@ -14,11 +6,12 @@ on:
       - 'v[0-9]*'
 
 permissions:
-  contents: write   # needed to create GitHub Releases and upload assets
+  contents: write
+  packages: write
 
 jobs:
   build-and-release:
-    name: Build & release ${{ github.ref_name }}
+    name: Build & release firmware ${{ github.ref_name }}
     runs-on: ubuntu-latest
 
     steps:
@@ -51,35 +44,25 @@ jobs:
         env:
           FIRMWARE_VERSION: ${{ github.ref_name }}
 
-      # ── Prepare release assets ──────────────────────────────────────────
       - name: Prepare release assets
         run: |
           mkdir -p release_assets
-
           TAG="${{ github.ref_name }}"
           BIN=".pio/build/freenove_esp32s3/firmware.bin"
           ELF=".pio/build/freenove_esp32s3/firmware.elf"
-
           cp "$BIN" "release_assets/firmware-${TAG}.bin"
           cp "$ELF" "release_assets/firmware-${TAG}.elf"
-
-          # OTA manifest – points at the asset URL that GitHub will create
-          # after the release is published.
           REPO="${{ github.repository }}"
           BINARY_URL="https://github.com/${REPO}/releases/download/${TAG}/firmware-${TAG}.bin"
-
-          cat > release_assets/manifest.json <<EOF
+          cat > release_assets/manifest.json <<EOF_ASSET
           {
             "version": "${TAG}",
             "url": "${BINARY_URL}",
             "notes": "See release notes on GitHub"
           }
-          EOF
-
-          echo "=== Release assets ==="
+          EOF_ASSET
           ls -lh release_assets/
 
-      # ── Determine pre-release flag ──────────────────────────────────────
       - name: Detect pre-release
         id: prerelease
         run: |
@@ -90,7 +73,6 @@ jobs:
             echo "flag=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Create GitHub Release ───────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -103,3 +85,36 @@ jobs:
             release_assets/firmware-${{ github.ref_name }}.bin
             release_assets/firmware-${{ github.ref_name }}.elf
             release_assets/manifest.json
+
+  publish-gauge-service-image:
+    name: Publish gauge-service image ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/esp32-s3-camera-envsensors-gauge-service
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push gauge-service image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./gauge-service
+          file: ./gauge-service/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

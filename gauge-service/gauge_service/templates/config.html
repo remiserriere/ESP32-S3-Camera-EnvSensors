@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Settings — {{ config.device_name }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #f1f5f9; }
+
+    /* ── Header ── */
+    header {
+      background: #1e293b; padding: .75rem 1.5rem;
+      display: flex; align-items: center; gap: 1rem;
+      border-bottom: 1px solid #334155; flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 1.15rem; flex: 1; }
+    header a, header button {
+      background: #374151; color: #f1f5f9; border: 1px solid #4b5563;
+      border-radius: 6px; padding: .3rem .85rem; font-size: .88rem;
+      cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    header a:hover, header button:hover { opacity: .85; }
+    header .btn-danger { background: #7f1d1d; border-color: #b91c1c; color: #fecaca; }
+
+    /* ── Layout ── */
+    main { max-width: 860px; margin: 2rem auto; padding: 0 1.5rem 4rem; }
+
+    /* ── Cards ── */
+    .card {
+      background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+      padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;
+    }
+    .card h2 { margin: 0 0 .1rem; font-size: 1rem; }
+    .card .section-hint { color: #64748b; font-size: .82rem; margin: 0 0 1rem; }
+
+    /* ── Field rows ── */
+    .field-row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: .5rem 1rem;
+      align-items: start; padding: .55rem 0; border-bottom: 1px solid #1f2937;
+    }
+    .field-row:last-child { border-bottom: none; }
+    .field-label {
+      font-size: .87rem; color: #cbd5e1; padding-top: .4rem;
+      display: flex; align-items: center; gap: .4rem; flex-wrap: wrap;
+    }
+    .field-label small { color: #64748b; font-size: .75rem; }
+
+    /* Badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: .2rem;
+      padding: .1rem .45rem; border-radius: 999px; font-size: .7rem;
+      font-weight: 700; white-space: nowrap;
+    }
+    .badge-env  { background: #1e3a5f; color: #93c5fd; border: 1px solid #1d4ed8; }
+    .badge-boot { background: #292524; color: #a8a29e; border: 1px solid #57534e; }
+    .badge-reboot { background: #451a03; color: #fcd34d; border: 1px solid #b45309; }
+
+    /* Inputs */
+    input[type=text], input[type=number], input[type=password], select {
+      width: 100%; padding: .38rem .55rem; font-size: .88rem;
+      background: #0f172a; color: #f1f5f9;
+      border: 1px solid #475569; border-radius: 6px;
+      transition: border-color .15s;
+    }
+    input:focus, select:focus { outline: none; border-color: #3b82f6; }
+
+    /* Locked / env-override fields */
+    input:disabled, select:disabled {
+      background: #1a2433; color: #64748b;
+      border-color: #1d3451; cursor: not-allowed; opacity: 1;
+    }
+    .field-locked .field-label { color: #475569; }
+
+    /* Checkbox row */
+    .check-wrap {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .38rem 0;
+    }
+    input[type=checkbox] {
+      width: 1rem; height: 1rem; accent-color: #3b82f6;
+      cursor: pointer; flex-shrink: 0;
+    }
+    input[type=checkbox]:disabled { cursor: not-allowed; opacity: .45; }
+
+    /* ── Banners ── */
+    .banner {
+      border-radius: 8px; padding: .65rem 1rem; font-size: .88rem; margin-bottom: 1.25rem;
+    }
+    .banner-warn { background: #451a03; border: 1px solid #b45309; color: #fcd34d; }
+    .banner-info { background: #0c1a2e; border: 1px solid #1e3a5f; color: #93c5fd; }
+
+    /* ── Action bar ── */
+    .action-bar {
+      position: sticky; bottom: 0;
+      background: #1e293b; border-top: 1px solid #334155;
+      padding: .85rem 1.5rem; display: flex; align-items: center;
+      gap: .75rem; flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-block; padding: .4rem 1rem; border-radius: 6px;
+      border: none; cursor: pointer; font-size: .9rem; font-weight: 600;
+      text-decoration: none; transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn-primary { background: #1d4ed8; color: #fff; }
+    .btn-success { background: #065f46; color: #d1fae5; }
+    .btn-sec     { background: #374151; color: #f1f5f9; border: 1px solid #4b5563; }
+    #save-status { font-size: .88rem; margin-left: .25rem; }
+    .ok  { color: #34d399; }
+    .err { color: #f87171; }
+    .warn { color: #fcd34d; }
+
+    /* ── Reboot overlay ── */
+    #reboot-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.75); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #reboot-overlay.show { display: flex; }
+    #reboot-box {
+      background: #1f2937; border: 1px solid #374151; border-radius: 12px;
+      padding: 2rem 2.5rem; text-align: center; max-width: 380px;
+    }
+    .spinner {
+      display: inline-block; width: 2rem; height: 2rem;
+      border: 3px solid #374151; border-top-color: #60a5fa;
+      border-radius: 50%; animation: spin .8s linear infinite;
+      margin-bottom: 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .muted { color: #9ca3af; font-size: .85rem; }
+  </style>
+</head>
+<body>
+
+<!-- Reboot overlay -->
+<div id="reboot-overlay">
+  <div id="reboot-box">
+    <div class="spinner"></div>
+    <p id="reboot-msg" style="font-size:1.05rem;margin:.5rem 0 1.5rem;">Restarting service…</p>
+    <p class="muted">The page will reload automatically when the service is back online.</p>
+  </div>
+</div>
+
+<header>
+  <h1>⚙️ Settings — {{ config.device_name }}</h1>
+  <a href="/">← Dashboard</a>
+  <a href="/setup">🔧 Gauge calibration</a>
+  <button class="btn-danger" onclick="rebootService()">🔄 Reboot service</button>
+</header>
+
+<main>
+
+  <!-- ENV banner -->
+  {% set locked = env_overrides %}
+  {% if locked %}
+  <div class="banner banner-info">
+    🔒 <strong>{{ locked | length }} field{{ 's' if locked | length > 1 else '' }}
+    locked by environment variable{{ 's' if locked | length > 1 else '' }}:</strong>
+    {{ locked | sort | join(', ') }}.
+    Remove the corresponding env var and reboot to manage them here.
+  </div>
+  {% endif %}
+
+  <div class="banner banner-info">
+    💡 Settings are loaded in order: <strong>env var</strong> → <strong>service_config.json</strong>
+    → <strong>built-in default</strong>. Fields saved here are written to
+    <code>{{ config.data_dir }}/service_config.json</code>.
+  </div>
+
+  <form id="cfg-form">
+
+    <!-- ── General ── -->
+    <div class="card">
+      <h2>General</h2>
+      <p class="section-hint">Basic service identity and storage settings.</p>
+
+      {% set f = "device_name" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-device_name">
+          Device name
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <input type="text" id="f-device_name" name="device_name"
+               value="{{ config.device_name }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "max_snapshots" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-max_snapshots">
+          Max stored snapshots
+          <small>(0 = unlimited)</small>
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <input type="number" id="f-max_snapshots" name="max_snapshots" min="0"
+               value="{{ config.max_snapshots }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "serve_history_limit" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-serve_history_limit">
+          History display limit (UI)
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <input type="number" id="f-serve_history_limit" name="serve_history_limit" min="1"
+               value="{{ config.serve_history_limit }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+    </div>
+
+    <!-- ── Analysis ── -->
+    <div class="card">
+      <h2>Analysis</h2>
+      <p class="section-hint">Needle detection and reading validation. Changes apply immediately (no reboot required).</p>
+
+      {% set f = "needle_detection_method" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-needle_detection_method">
+          Needle detection method
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <select id="f-needle_detection_method" name="needle_detection_method"
+                {% if f in locked %}disabled{% endif %}>
+          <option value="auto"         {% if config.needle_detection_method == "auto"         %}selected{% endif %}>auto (best-of-3)</option>
+          <option value="dark_radial"  {% if config.needle_detection_method == "dark_radial"  %}selected{% endif %}>dark_radial — black / dark needle</option>
+          <option value="hsv_color"    {% if config.needle_detection_method == "hsv_color"    %}selected{% endif %}>hsv_color — coloured needle</option>
+          <option value="radial_sweep" {% if config.needle_detection_method == "radial_sweep" %}selected{% endif %}>radial_sweep — generic fallback</option>
+        </select>
+      </div>
+
+      {% set f = "max_delta_percent" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-max_delta_percent">
+          Max delta % between readings
+          <small>(0 = disabled)</small>
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <input type="number" id="f-max_delta_percent" name="max_delta_percent"
+               min="0" step="0.5"
+               value="{{ config.max_delta_percent }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "upload_debug_mode" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-upload_debug_mode">
+          Upload debug mode
+          <small>(synchronous analysis on /upload)</small>
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <div class="check-wrap">
+          <input type="checkbox" id="f-upload_debug_mode" name="upload_debug_mode"
+                 {% if config.upload_debug_mode %}checked{% endif %}
+                 {% if f in locked %}disabled{% endif %}>
+          <label for="f-upload_debug_mode" style="font-size:.85rem;color:#94a3b8;">Enabled</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MQTT / HA ── -->
+    <div class="card">
+      <h2>MQTT &amp; Home Assistant</h2>
+      <p class="section-hint">
+        Changes to MQTT settings are saved to file but require a reboot to take effect.
+      </p>
+      <div class="banner banner-warn" style="margin-bottom:1rem;">
+        ⚠️ Fields in this section are tagged
+        <span class="badge badge-reboot">⟳ REBOOT</span> — save then click
+        <em>Save &amp; Reboot</em>.
+      </div>
+
+      {% set f = "mqtt_enabled" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-mqtt_enabled">
+          MQTT enabled
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <div class="check-wrap">
+          <input type="checkbox" id="f-mqtt_enabled" name="mqtt_enabled"
+                 {% if config.mqtt_enabled %}checked{% endif %}
+                 {% if f in locked %}disabled{% endif %}>
+          <label for="f-mqtt_enabled" style="font-size:.85rem;color:#94a3b8;">Enabled</label>
+        </div>
+      </div>
+
+      {% for f, label, val in [
+          ("mqtt_host",       "MQTT host",       config.mqtt_host),
+          ("mqtt_client_id",  "MQTT client ID",  config.mqtt_client_id),
+          ("mqtt_topic_root", "MQTT topic root", config.mqtt_topic_root),
+      ] %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-{{ f }}">
+          {{ label }}
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <input type="text" id="f-{{ f }}" name="{{ f }}"
+               value="{{ val }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+      {% endfor %}
+
+      {% set f = "mqtt_port" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-mqtt_port">
+          MQTT port
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <input type="number" id="f-mqtt_port" name="mqtt_port" min="1" max="65535"
+               value="{{ config.mqtt_port }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "mqtt_username" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-mqtt_username">
+          MQTT username
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <input type="text" id="f-mqtt_username" name="mqtt_username"
+               value="{{ config.mqtt_username or '' }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "mqtt_password" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-mqtt_password">
+          MQTT password
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <input type="password" id="f-mqtt_password" name="mqtt_password"
+               value="{{ config.mqtt_password or '' }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+
+      {% set f = "mqtt_use_ssl" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-mqtt_use_ssl">
+          MQTT use SSL
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <div class="check-wrap">
+          <input type="checkbox" id="f-mqtt_use_ssl" name="mqtt_use_ssl"
+                 {% if config.mqtt_use_ssl %}checked{% endif %}
+                 {% if f in locked %}disabled{% endif %}>
+          <label for="f-mqtt_use_ssl" style="font-size:.85rem;color:#94a3b8;">Enabled</label>
+        </div>
+      </div>
+
+      {% set f = "home_assistant_discovery_prefix" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-home_assistant_discovery_prefix">
+          HA discovery prefix
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>
+          {% else %}<span class="badge badge-reboot">⟳ REBOOT</span>{% endif %}
+        </label>
+        <input type="text" id="f-home_assistant_discovery_prefix"
+               name="home_assistant_discovery_prefix"
+               value="{{ config.home_assistant_discovery_prefix }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+    </div>
+
+    <!-- ── Read-only bootstrap info ── -->
+    <div class="card">
+      <h2>Bootstrap (read-only)</h2>
+      <p class="section-hint">
+        These are set at launch and cannot be changed at runtime.
+        Modify the corresponding env vars and restart the container.
+      </p>
+
+      {% for label, val, env in [
+          ("Listen host",    config.host,           "APP_HOST"),
+          ("Listen port",    config.port,           "APP_PORT"),
+          ("Data directory", config.data_dir,       "DATA_DIR"),
+      ] %}
+      <div class="field-row field-locked">
+        <label class="field-label">
+          {{ label }}
+          <span class="badge badge-boot">🔒 BOOT</span>
+          <small>{{ env }}</small>
+        </label>
+        <input type="text" value="{{ val }}" disabled>
+      </div>
+      {% endfor %}
+    </div>
+
+  </form><!-- /cfg-form -->
+</main>
+
+<!-- Sticky action bar -->
+<div class="action-bar">
+  <button class="btn btn-primary" onclick="saveConfig(false)">💾 Save</button>
+  <button class="btn btn-success" onclick="saveConfig(true)">💾 Save &amp; Reboot</button>
+  <button class="btn btn-sec" onclick="previewConfig()">↗ Preview JSON</button>
+  <a href="/api/config/file" target="_blank" class="btn btn-sec">📄 Open service_config.json</a>
+  <span id="save-status"></span>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Collect form data
+// ─────────────────────────────────────────────────────────────────────────────
+function collectFormData() {
+  const form = document.getElementById('cfg-form');
+  const data = {};
+  form.querySelectorAll('input:not([disabled]), select:not([disabled])').forEach(el => {
+    const name = el.name;
+    if (!name) return;
+    if (el.type === 'checkbox') {
+      data[name] = el.checked;
+    } else if (el.type === 'number') {
+      data[name] = el.value === '' ? null : Number(el.value);
+    } else {
+      data[name] = el.value;
+    }
+  });
+  return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preview config JSON in a new tab (without saving)
+// Includes env-locked fields prefixed with "_" so they appear as informational
+// ─────────────────────────────────────────────────────────────────────────────
+function previewConfig() {
+  const form = document.getElementById('cfg-form');
+  const data = {};
+  form.querySelectorAll('input, select').forEach(el => {
+    const name = el.name;
+    if (!name) return;
+    const key = el.disabled ? ('_' + name) : name;
+    if (el.type === 'checkbox') {
+      data[key] = el.checked;
+    } else if (el.type === 'number') {
+      data[key] = el.value === '' ? null : Number(el.value);
+    } else {
+      data[key] = el.value;
+    }
+  });
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  window.open(URL.createObjectURL(blob), '_blank');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save
+// ─────────────────────────────────────────────────────────────────────────────
+async function saveConfig(andReboot) {
+  const st = document.getElementById('save-status');
+  st.className = ''; st.textContent = '⏳ Saving…';
+  const data = collectFormData();
+  try {
+    const resp = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      st.className = 'err';
+      st.textContent = '❌ ' + (result.error || 'Save failed') +
+        (result.details ? ' — ' + result.details.join(', ') : '');
+      return;
+    }
+    if (andReboot) {
+      st.className = 'ok'; st.textContent = '✅ Saved — rebooting…';
+      setTimeout(rebootService, 600);
+      return;
+    }
+    if (result.reboot_required) {
+      st.className = 'warn';
+      st.textContent = '✅ Saved. ⚠️ Some settings require a reboot: ' +
+        result.reboot_fields.join(', ') + '.';
+    } else {
+      st.className = 'ok'; st.textContent = '✅ Saved — all changes applied immediately.';
+    }
+  } catch (e) {
+    st.className = 'err'; st.textContent = '❌ Request failed: ' + e;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reboot (same pattern as dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+async function rebootService() {
+  const overlay = document.getElementById('reboot-overlay');
+  const msg     = document.getElementById('reboot-msg');
+  overlay.classList.add('show');
+  msg.textContent = 'Sending reboot command…';
+  try { await fetch('/api/reboot', {method: 'POST'}); } catch (_) {}
+  msg.textContent = 'Restarting service…';
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/health?t=' + Date.now(), {cache: 'no-store'});
+      if (r.ok) {
+        clearInterval(poll);
+        msg.textContent = '✅ Service is back — reloading…';
+        setTimeout(() => window.location.reload(), 800);
+      }
+    } catch (_) {}
+  }, 1500);
+}
+</script>
+</body>
+</html>

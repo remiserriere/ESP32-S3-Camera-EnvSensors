@@ -540,6 +540,7 @@ class GaugeAnalyzer:
 
     def _build_templates(self) -> dict[int, list[np.ndarray]]:
         templates: dict[int, list[np.ndarray]] = {}
+        # Typical printed markings observed on Rochester-style LPG dial gauges.
         labels = [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95]
         for value in labels:
             forms = [f"{value}"]

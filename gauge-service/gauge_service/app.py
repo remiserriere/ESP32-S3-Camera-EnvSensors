@@ -7,7 +7,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-_RECORD_ID_RE = re.compile(r'^[A-Za-z0-9]+$')
+_RECORD_ID_RE = re.compile(r'^\d{8}T\d{6}\d{6}Z$')
 
 from .analyzer import GaugeAnalyzer
 from .config import ServiceConfig

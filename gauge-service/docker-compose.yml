@@ -28,6 +28,6 @@ services:
       ANALYSIS_DEFAULT_HIGH_ANGLE: 315
       ANALYSIS_EXPECTED_SPAN_DEG: 90
       ANALYSIS_MIRROR_MODE: none # none | horizontal | vertical | both
-      UPLOAD_DEBUG_MODE: "false" # false=HTTP 200 immédiat + analyse async, true=réponse détaillée sync
+      UPLOAD_DEBUG_MODE: "false" # false=immediate HTTP 200 + async analysis, true=detailed sync response
     volumes:
       - ./data:/data

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
@@ -20,6 +21,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     storage = StorageManager(service_config)
     analyzer = GaugeAnalyzer(service_config)
     mqtt = MqttPublisher(service_config)
+    analyzer_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gauge-analyzer")
 
     app.config["SERVICE_CONFIG"] = service_config
     app.extensions["storage"] = storage
@@ -33,7 +35,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
 
     @app.get("/")
     def index() -> str:
-        latest = storage.latest_record()
+        latest = storage.latest_record(require_analysis=True)
         records = storage.list_records(limit=service_config.serve_history_limit)
         return render_template("index.html", latest=latest, records=records, config=service_config)
 
@@ -43,7 +45,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
 
     @app.get("/api/latest")
     def api_latest() -> Any:
-        latest = storage.latest_record()
+        latest = storage.latest_record(require_analysis=True)
         return jsonify(latest or {})
 
     @app.get("/api/photos")
@@ -61,6 +63,8 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         record = storage.get_record(record_id)
         if record is None:
             return jsonify({"error": "Record not found"}), 404
+        if not record.get("analysis"):
+            return jsonify({"error": "Analysis not ready"}), 409
         image_bytes = storage.get_image_bytes(record["image_name"])
         if image_bytes is None:
             return jsonify({"error": "Image file not found"}), 404
@@ -71,6 +75,21 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             return jsonify({"error": "Failed to generate debug image"}), 500
         return Response(debug_bytes, mimetype="image/jpeg")
 
+    def _process_async_analysis(record_id: str, payload: bytes) -> None:
+        try:
+            analysis = analyzer.analyze(payload)
+            record = storage.update_record_analysis(record_id, analysis, status="ready")
+            if record is None:
+                app.logger.warning("Record %s disappeared before analysis completion", record_id)
+                return
+            try:
+                mqtt.publish_state(record)
+            except Exception as exc:  # pragma: no cover - runtime connectivity is environment-dependent
+                app.logger.warning("MQTT state publish failed: %s", exc)
+        except Exception as exc:
+            app.logger.exception("Async analysis failed for record %s", record_id)
+            storage.mark_record_failed(record_id, str(exc))
+
     @app.post("/upload")
     def upload() -> Any:
         image = request.files.get("image")
@@ -79,13 +98,18 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
 
         metadata = _load_metadata(request.form.get("metadata"))
         payload = image.read()
-        analysis = analyzer.analyze(payload)
-        record = storage.save_record(payload, metadata, analysis)
-        try:
-            mqtt.publish_state(record)
-        except Exception as exc:  # pragma: no cover - runtime connectivity is environment-dependent
-            app.logger.warning("MQTT state publish failed: %s", exc)
-        return jsonify(record), 200
+        if service_config.upload_debug_mode:
+            analysis = analyzer.analyze(payload)
+            record = storage.save_record(payload, metadata, analysis, status="ready")
+            try:
+                mqtt.publish_state(record)
+            except Exception as exc:  # pragma: no cover - runtime connectivity is environment-dependent
+                app.logger.warning("MQTT state publish failed: %s", exc)
+            return jsonify(record), 200
+
+        record = storage.save_record(payload, metadata, analysis=None, status="pending")
+        analyzer_pool.submit(_process_async_analysis, record["id"], payload)
+        return jsonify({"id": record["id"], "status": "accepted"}), 200
 
     return app
 

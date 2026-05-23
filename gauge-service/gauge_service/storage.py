@@ -14,7 +14,14 @@ class StorageManager:
         self.config.photos_dir.mkdir(parents=True, exist_ok=True)
         self.config.records_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_record(self, image_bytes: bytes, metadata: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
+    def save_record(
+        self,
+        image_bytes: bytes,
+        metadata: dict[str, Any],
+        analysis: dict[str, Any] | None,
+        status: str = "ready",
+        error: str | None = None,
+    ) -> dict[str, Any]:
         received_at = datetime.now(UTC)
         record_id = received_at.strftime("%Y%m%dT%H%M%S%fZ")
         image_name = f"{record_id}.jpg"
@@ -25,6 +32,8 @@ class StorageManager:
             "image_url": f"/photos/{image_name}",
             "metadata": metadata,
             "analysis": analysis,
+            "status": status,
+            "error": error,
         }
 
         (self.config.photos_dir / image_name).write_bytes(image_bytes)
@@ -32,6 +41,31 @@ class StorageManager:
             json.dump(record, handle, ensure_ascii=False, indent=2)
 
         self._prune()
+        return record
+
+    def update_record_analysis(self, record_id: str, analysis: dict[str, Any], status: str = "ready") -> dict[str, Any] | None:
+        path = self.config.records_dir / f"{record_id}.json"
+        if not path.exists():
+            return None
+        with path.open(encoding="utf-8") as handle:
+            record = json.load(handle)
+        record["analysis"] = analysis
+        record["status"] = status
+        record["error"] = None
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
+        return record
+
+    def mark_record_failed(self, record_id: str, error: str) -> dict[str, Any] | None:
+        path = self.config.records_dir / f"{record_id}.json"
+        if not path.exists():
+            return None
+        with path.open(encoding="utf-8") as handle:
+            record = json.load(handle)
+        record["status"] = "failed"
+        record["error"] = error
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
         return record
 
     def list_records(self, limit: int | None = None) -> list[dict[str, Any]]:
@@ -44,9 +78,14 @@ class StorageManager:
                 records.append(json.load(handle))
         return records
 
-    def latest_record(self) -> dict[str, Any] | None:
-        records = self.list_records(limit=1)
-        return records[0] if records else None
+    def latest_record(self, require_analysis: bool = False) -> dict[str, Any] | None:
+        records = self.list_records(limit=None)
+        if not require_analysis:
+            return records[0] if records else None
+        for record in records:
+            if record.get("analysis"):
+                return record
+        return None
 
     def get_record(self, record_id: str) -> dict[str, Any] | None:
         path = self.config.records_dir / f"{record_id}.json"

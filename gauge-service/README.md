@@ -50,3 +50,10 @@ Pour une image retournée en miroir par le device, régler `ANALYSIS_MIRROR_MODE
 - `horizontal`
 - `vertical`
 - `both`
+
+### Mode upload debug
+
+`UPLOAD_DEBUG_MODE` contrôle la réponse de `POST /upload` :
+
+- `false` (défaut): retourne `200` immédiatement (`status=accepted`) puis lance l’analyse en post-traitement.
+- `true`: exécute l’analyse en synchrone et retourne le record complet avec détails OCR dans `analysis.source.ocr_labels`.

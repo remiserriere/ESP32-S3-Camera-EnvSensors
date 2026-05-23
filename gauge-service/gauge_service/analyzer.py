@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import cv2
 import numpy as np
@@ -54,14 +54,14 @@ class GaugeAnalyzer:
         frame = self._resize_if_needed(corrected)
         circle, circle_confidence, circle_estimated = self._detect_circle(frame)
         needle_angle, needle_confidence, needle_source = self._detect_needle(frame, circle)
-        low_angle, high_angle, label_confidence, label_source, estimated = self._detect_scale(frame, circle)
+        scale = self._detect_scale(frame, circle)
 
-        span = self._choose_span(low_angle, high_angle, needle_angle)
-        fraction = np.clip(span["distance_to_needle"] / span["span"], 0.0, 1.0)
-        percentage = self.config.analysis_low_percent + fraction * (self.config.analysis_high_percent - self.config.analysis_low_percent)
+        span = self._choose_span(float(scale["low_angle"]), float(scale["high_angle"]), needle_angle)
+        percentage, non_linear = self._estimate_percentage_from_markers(needle_angle, span, list(scale["markers"]))
 
+        label_confidence = float(scale["confidence"])
         confidence = max(5.0, min(99.0, (circle_confidence * 0.25 + needle_confidence * 0.45 + label_confidence * 0.30) * 100.0))
-        estimated = estimated or circle_estimated or needle_source != "red_line"
+        estimated = bool(scale["estimated"]) or circle_estimated or needle_source != "red_line"
         estimated = estimated or abs(span["span"] - self.config.analysis_expected_span_deg) > max(12.0, self.config.analysis_expected_span_deg * 0.15)
 
         return DetectionResult(
@@ -76,11 +76,13 @@ class GaugeAnalyzer:
             circle_r=float(circle[2]),
             source={
                 "needle": needle_source,
-                "scale": label_source,
+                "scale": scale["source"],
                 "span_degrees": round(span["span"], 2),
                 "circle_confidence": round(circle_confidence, 3),
                 "needle_confidence": round(needle_confidence, 3),
                 "scale_confidence": round(label_confidence, 3),
+                "scale_mode": "non_linear_markers" if non_linear else "linear_fallback",
+                "ocr_labels": scale["ocr_labels"],
             },
         ).as_dict()
 
@@ -204,6 +206,7 @@ class GaugeAnalyzer:
     def _detect_circle(self, image: np.ndarray) -> tuple[tuple[float, float, float], float, bool]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (9, 9), 2)
+        red_circle = self._detect_red_arc_circle(image)
         circles = cv2.HoughCircles(
             gray,
             cv2.HOUGH_GRADIENT,
@@ -214,9 +217,29 @@ class GaugeAnalyzer:
             minRadius=int(min(image.shape[:2]) * 0.12),
             maxRadius=int(min(image.shape[:2]) * 0.48),
         )
+        hough_circle: tuple[float, float, float] | None = None
         if circles is not None and len(circles[0]) > 0:
             circle = max(circles[0], key=lambda item: item[2])
-            return (float(circle[0]), float(circle[1]), float(circle[2])), 0.92, False
+            hough_circle = (float(circle[0]), float(circle[1]), float(circle[2]))
+
+        if red_circle and hough_circle:
+            rx, ry, rr = red_circle
+            hx, hy, hr = hough_circle
+            blended = (hx * 0.35 + rx * 0.65, hy * 0.35 + ry * 0.65, hr * 0.4 + rr * 0.6)
+            hub = self._detect_black_hub_center(gray, blended)
+            if hub is not None:
+                blended = (blended[0] * 0.7 + hub[0] * 0.3, blended[1] * 0.7 + hub[1] * 0.3, blended[2])
+            return (float(blended[0]), float(blended[1]), float(blended[2])), 0.95, False
+        if red_circle:
+            hub = self._detect_black_hub_center(gray, red_circle)
+            if hub is not None:
+                red_circle = (red_circle[0] * 0.68 + hub[0] * 0.32, red_circle[1] * 0.68 + hub[1] * 0.32, red_circle[2])
+            return (float(red_circle[0]), float(red_circle[1]), float(red_circle[2])), 0.9, False
+        if hough_circle:
+            hub = self._detect_black_hub_center(gray, hough_circle)
+            if hub is not None:
+                hough_circle = (hough_circle[0] * 0.76 + hub[0] * 0.24, hough_circle[1] * 0.76 + hub[1] * 0.24, hough_circle[2])
+            return (float(hough_circle[0]), float(hough_circle[1]), float(hough_circle[2])), 0.86, False
 
         edges = cv2.Canny(gray, 50, 150)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -227,6 +250,53 @@ class GaugeAnalyzer:
 
         h, w = image.shape[:2]
         return (w / 2.0, h / 2.0, min(h, w) * 0.35), 0.3, True
+
+    def _detect_red_arc_circle(self, image: np.ndarray) -> tuple[float, float, float] | None:
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        red_mask = cv2.inRange(hsv, np.array([0, 60, 50]), np.array([15, 255, 255]))
+        red_mask |= cv2.inRange(hsv, np.array([165, 60, 50]), np.array([180, 255, 255]))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=2)
+        points = np.column_stack(np.where(red_mask > 0))
+        if points.shape[0] < 120:
+            return None
+        pts = np.array([[float(col), float(row)] for row, col in points], dtype=np.float32)
+        (x, y), r = cv2.minEnclosingCircle(pts)
+        if r <= min(image.shape[:2]) * 0.1:
+            return None
+        return float(x), float(y), float(r)
+
+    def _detect_black_hub_center(self, gray: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float] | None:
+        cx, cy, r = circle
+        mask = self._inner_mask(gray.shape[:2], circle, 0.0, 0.33)
+        _, dark = cv2.threshold(gray, 95, 255, cv2.THRESH_BINARY_INV)
+        dark = cv2.bitwise_and(dark, dark, mask=mask)
+        contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best: tuple[float, float, float] | None = None
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < max(16.0, r * r * 0.0012) or area > r * r * 0.08:
+                continue
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+            if circularity < 0.45:
+                continue
+            moment = cv2.moments(contour)
+            if moment["m00"] == 0:
+                continue
+            x = moment["m10"] / moment["m00"]
+            y = moment["m01"] / moment["m00"]
+            distance = math.hypot(x - cx, y - cy)
+            if distance > r * 0.34:
+                continue
+            score = circularity - distance / max(1.0, r)
+            if best is None or score > best[2]:
+                best = (x, y, score)
+        if best is None:
+            return None
+        return float(best[0]), float(best[1])
 
     def _detect_needle(self, image: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float, str]:
         cx, cy, radius = circle
@@ -274,37 +344,56 @@ class GaugeAnalyzer:
             results.append((score, angle))
         return results
 
-    def _detect_scale(self, image: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float, float, str, bool]:
+    def _detect_scale(self, image: np.ndarray, circle: tuple[float, float, float]) -> dict[str, Any]:
         candidates = self._detect_label_candidates(image, circle)
-        low = next((candidate for candidate in candidates if candidate["kind"] == "low"), None)
-        high = next((candidate for candidate in candidates if candidate["kind"] == "high"), None)
+        best_by_value: dict[int, dict[str, Any]] = {}
+        for candidate in candidates:
+            value = int(candidate["value"])
+            existing = best_by_value.get(value)
+            if existing is None or candidate["score"] > existing["score"]:
+                best_by_value[value] = candidate
 
-        estimated = False
-        source = "labels"
-        confidence = 0.25
+        low = best_by_value.get(int(self.config.analysis_low_percent))
+        high = best_by_value.get(int(self.config.analysis_high_percent))
+        ocr_labels = [
+            {
+                "value": int(item["value"]),
+                "score": round(float(item["score"]), 3),
+                "angle": round(float(item["angle"]), 2),
+                "bbox": item["bbox"],
+            }
+            for item in sorted(best_by_value.values(), key=lambda i: i["value"])
+        ]
+
         if low and high:
-            confidence = min(0.95, (low["score"] + high["score"]) / 2.0)
-            return low["angle"], high["angle"], confidence, source, estimated
+            markers = [
+                {"percent": int(item["value"]), "angle": float(item["angle"]), "score": float(item["score"])}
+                for item in sorted(best_by_value.values(), key=lambda i: i["value"])
+                if 5 <= int(item["value"]) <= 95
+            ]
+            confidence = min(0.97, (float(low["score"]) + float(high["score"])) / 2.0 + min(0.22, len(markers) * 0.015))
+            return {
+                "low_angle": float(low["angle"]),
+                "high_angle": float(high["angle"]),
+                "confidence": confidence,
+                "source": "strict_ocr_5_95",
+                "estimated": False,
+                "markers": markers,
+                "ocr_labels": ocr_labels,
+            }
 
-        if low and not high:
-            high_angle = self._normalize_angle(low["angle"] + self.config.analysis_expected_span_deg)
-            return low["angle"], high_angle, min(0.7, low["score"]), "low_label+estimate", True
-
-        if high and not low:
-            low_angle = self._normalize_angle(high["angle"] - self.config.analysis_expected_span_deg)
-            return low_angle, high["angle"], min(0.7, high["score"]), "high_label+estimate", True
-
-        tick_detection = self._detect_tick_endpoints(image, circle)
-        if tick_detection is not None:
-            return tick_detection
-
-        return (
-            self.config.analysis_default_low_angle,
-            self.config.analysis_default_high_angle,
-            0.2,
-            "configured_defaults",
-            True,
-        )
+        return {
+            "low_angle": float(self.config.analysis_default_low_angle),
+            "high_angle": float(self.config.analysis_default_high_angle),
+            "confidence": 0.15,
+            "source": "missing_5_95_configured_defaults",
+            "estimated": True,
+            "markers": [
+                {"percent": float(self.config.analysis_low_percent), "angle": float(self.config.analysis_default_low_angle), "score": 0.1},
+                {"percent": float(self.config.analysis_high_percent), "angle": float(self.config.analysis_default_high_angle), "score": 0.1},
+            ],
+            "ocr_labels": ocr_labels,
+        }
 
     def _detect_tick_endpoints(self, image: np.ndarray, circle: tuple[float, float, float]) -> tuple[float, float, float, str, bool] | None:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -413,12 +502,12 @@ class GaugeAnalyzer:
             if distance < radius * 0.55 or distance > radius * 1.1:
                 continue
             patch = gray[max(y - 8, 0): y + h + 8, max(x - 8, 0): x + w + 8]
-            kind, score = self._classify_patch(patch)
-            if kind is None:
+            value, score = self._classify_patch(patch)
+            if value is None:
                 continue
             candidates.append(
                 {
-                    "kind": kind,
+                    "value": int(value),
                     "score": score,
                     "angle": self._angle_from_center(cx, cy, center_x, center_y),
                     "bbox": [int(x), int(y), int(w), int(h)],
@@ -427,34 +516,43 @@ class GaugeAnalyzer:
         candidates.sort(key=lambda item: item["score"], reverse=True)
         deduped: list[dict] = []
         for candidate in candidates:
-            if any(abs(self._angular_distance(candidate["angle"], existing["angle"])) < 8 for existing in deduped if existing["kind"] == candidate["kind"]):
+            if any(abs(self._angular_distance(candidate["angle"], existing["angle"])) < 8 for existing in deduped if existing["value"] == candidate["value"]):
                 continue
             deduped.append(candidate)
         return deduped
 
-    def _classify_patch(self, patch: np.ndarray) -> tuple[str | None, float]:
+    def _classify_patch(self, patch: np.ndarray) -> tuple[int | None, float]:
         _, binary = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-        best_label = None
+        best_label: int | None = None
         best_score = 0.0
         for rotated in (binary, cv2.rotate(binary, cv2.ROTATE_90_CLOCKWISE), cv2.rotate(binary, cv2.ROTATE_180), cv2.rotate(binary, cv2.ROTATE_90_COUNTERCLOCKWISE)):
-            for label, template in self.templates.items():
-                resized = cv2.resize(rotated, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
-                score = float(cv2.matchTemplate(resized, template, cv2.TM_CCOEFF_NORMED).max())
-                if score > best_score:
-                    best_score = score
-                    best_label = label
-        if best_label is None or best_score < 0.35:
+            for label, templates in self.templates.items():
+                for template in templates:
+                    resized = cv2.resize(rotated, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
+                    score = float(cv2.matchTemplate(resized, template, cv2.TM_CCOEFF_NORMED).max())
+                    if score > best_score:
+                        best_score = score
+                        best_label = label
+        if best_label is None or best_score < 0.22:
             return None, best_score
-        return ("high" if best_label.startswith("95") else "low"), best_score
+        return int(best_label), best_score
 
-    def _build_templates(self) -> dict[str, np.ndarray]:
-        templates: dict[str, np.ndarray] = {}
-        for label in ("5", "5%", "95", "95%"):
-            canvas = np.full((80, 180), 255, dtype=np.uint8)
-            cv2.putText(canvas, label, (6, 58), cv2.FONT_HERSHEY_SIMPLEX, 1.8, 0, 4, cv2.LINE_AA)
-            _, binary = cv2.threshold(canvas, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            templates[label] = binary
+    def _build_templates(self) -> dict[int, list[np.ndarray]]:
+        templates: dict[int, list[np.ndarray]] = {}
+        labels = [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95]
+        for value in labels:
+            forms = [f"{value}"]
+            if value in {5, 95}:
+                forms.append(f"{value}%")
+            rendered: list[np.ndarray] = []
+            for text in forms:
+                for scale, thickness in ((1.4, 3), (1.7, 4), (2.0, 4)):
+                    canvas = np.full((96, 224), 255, dtype=np.uint8)
+                    cv2.putText(canvas, text, (8, 70), cv2.FONT_HERSHEY_SIMPLEX, scale, 0, thickness, cv2.LINE_AA)
+                    _, binary = cv2.threshold(canvas, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+                    rendered.append(binary)
+            templates[value] = rendered
         return templates
 
     def _choose_span(self, low_angle: float, high_angle: float, needle_angle: float) -> dict[str, float]:
@@ -479,6 +577,42 @@ class GaugeAnalyzer:
             candidate["span_delta"] = abs(candidate["span"] - self.config.analysis_expected_span_deg)
         candidates.sort(key=lambda item: (not item["contains_needle"], item["span_delta"]))
         return candidates[0]
+
+    def _estimate_percentage_from_markers(self, needle_angle: float, span: dict[str, float], markers: list[dict[str, float]]) -> tuple[float, bool]:
+        if not markers:
+            fraction = np.clip(span["distance_to_needle"] / max(1e-6, span["span"]), 0.0, 1.0)
+            value = self.config.analysis_low_percent + fraction * (self.config.analysis_high_percent - self.config.analysis_low_percent)
+            return float(value), False
+
+        forward = self._normalize_angle(span["high"] - span["low"])
+        reverse = self._normalize_angle(span["low"] - span["high"])
+        if abs(forward - span["span"]) <= abs(reverse - span["span"]):
+            to_pos = lambda ang: self._normalize_angle(ang - span["low"])
+        else:
+            to_pos = lambda ang: self._normalize_angle(span["low"] - ang)
+
+        weighted: list[tuple[float, float]] = []
+        for marker in markers:
+            pos = to_pos(float(marker["angle"]))
+            if pos <= span["span"] + 1e-6:
+                weighted.append((pos, float(marker["percent"])))
+        if len(weighted) < 2:
+            fraction = np.clip(span["distance_to_needle"] / max(1e-6, span["span"]), 0.0, 1.0)
+            value = self.config.analysis_low_percent + fraction * (self.config.analysis_high_percent - self.config.analysis_low_percent)
+            return float(value), False
+
+        weighted = sorted(weighted, key=lambda item: item[0])
+        needle_pos = np.clip(span["distance_to_needle"], 0.0, span["span"])
+
+        if needle_pos <= weighted[0][0]:
+            return float(weighted[0][1]), True
+        for (p0, v0), (p1, v1) in zip(weighted, weighted[1:]):
+            if p0 <= needle_pos <= p1:
+                if abs(p1 - p0) < 1e-6:
+                    return float(v0), True
+                ratio = (needle_pos - p0) / (p1 - p0)
+                return float(v0 + ratio * (v1 - v0)), True
+        return float(weighted[-1][1]), True
 
     def _inner_mask(self, shape: tuple[int, int], circle: tuple[float, float, float], min_ratio: float, max_ratio: float) -> np.ndarray:
         height, width = shape

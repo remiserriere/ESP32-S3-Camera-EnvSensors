@@ -72,6 +72,8 @@ spec:
               value: "90"
             - name: ANALYSIS_MIRROR_MODE
               value: "none"
+            - name: UPLOAD_DEBUG_MODE
+              value: "false"
           volumeMounts:
             - name: data
               mountPath: /data

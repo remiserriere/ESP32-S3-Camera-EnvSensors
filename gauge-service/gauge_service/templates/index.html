@@ -52,6 +52,7 @@
     </section>
     <section class="card">
       <h2>Extracted data</h2>
+      {% if latest.analysis %}
       <table>
         <tr><th>Gauge level</th><td>{{ latest.analysis.percentage }} %</td></tr>
         <tr><th>Confidence</th><td>{{ latest.analysis.confidence }} %</td></tr>
@@ -68,6 +69,10 @@
         <tr><th>Mirror mode</th><td>{{ config.analysis_mirror_mode }}</td></tr>
         <tr><th>Metadata</th><td><pre>{{ latest.metadata | tojson(indent=2) }}</pre></td></tr>
       </table>
+      {% else %}
+      <p>Analysis pending or failed.</p>
+      <p class="muted">status={{ latest.status }} {% if latest.error %}error={{ latest.error }}{% endif %}</p>
+      {% endif %}
     </section>
   </div>
   {% else %}
@@ -80,8 +85,12 @@
       {% for record in records %}
       <li>
         <a href="{{ record.image_url }}">{{ record.image_name }}</a>
+        {% if record.analysis %}
         — {{ record.analysis.percentage }}% (conf {{ record.analysis.confidence }}%, est={{ record.analysis.estimated }})
         — <a href="/debug_image/{{ record.id }}" target="_blank">🔍 debug</a>
+        {% else %}
+        — status={{ record.status }}
+        {% endif %}
       </li>
       {% else %}
       <li>No stored photo.</li>

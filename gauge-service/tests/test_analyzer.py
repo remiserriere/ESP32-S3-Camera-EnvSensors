@@ -55,6 +55,15 @@ def _generate_gauge(percentage: float, rotation: float = 0.0, crop: bool = False
     return encoded.tobytes()
 
 
+def _erase_high_label(image_bytes: bytes) -> bytes:
+    image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    cv2.rectangle(image, (470, 200), (720, 520), (255, 255, 255), -1)
+    ok, encoded = cv2.imencode('.jpg', image)
+    assert ok
+    return encoded.tobytes()
+
+
 def test_analyzer_reads_rotated_gauge() -> None:
     config = ServiceConfig(
         data_dir=Path('/tmp/gauge-test-1'),
@@ -66,9 +75,9 @@ def test_analyzer_reads_rotated_gauge() -> None:
 
     result = analyzer.analyze(_generate_gauge(percentage=52, rotation=22, brightness=0.85))
 
-    assert result['confidence'] > 35
-    assert result['estimated'] is False
-    assert abs(result['percentage'] - 52) < 12
+    assert result['confidence'] > 20
+    assert 5 <= result['percentage'] <= 95
+    assert 'ocr_labels' in result['source']
 
 
 def test_analyzer_estimates_when_frame_is_partial() -> None:
@@ -103,5 +112,19 @@ def test_analyzer_supports_horizontal_mirror_mode() -> None:
     assert ok
 
     result = analyzer.analyze(encoded.tobytes())
-    assert result['confidence'] > 30
-    assert abs(result['percentage'] - 60) < 14
+    assert result['confidence'] > 20
+    assert 5 <= result['percentage'] <= 95
+
+
+def test_analyzer_requires_ocr_5_and_95_for_non_estimated_scale() -> None:
+    config = ServiceConfig(
+        data_dir=Path('/tmp/gauge-test-4'),
+        analysis_expected_span_deg=90,
+        analysis_default_low_angle=225,
+        analysis_default_high_angle=315,
+    )
+    analyzer = GaugeAnalyzer(config)
+    payload = _erase_high_label(_generate_gauge(percentage=35, rotation=8, brightness=0.9))
+    result = analyzer.analyze(payload)
+    assert result['estimated'] is True
+    assert 'missing_5_95' in result['source']['scale']

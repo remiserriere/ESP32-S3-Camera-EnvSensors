@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import time
 from pathlib import Path
 
 import cv2
@@ -45,6 +46,7 @@ def test_upload_persists_and_prunes_records(tmp_path: Path) -> None:
         analysis_expected_span_deg=90,
         analysis_default_low_angle=225,
         analysis_default_high_angle=315,
+        upload_debug_mode=True,
     )
     app = create_app(config)
     client = app.test_client()
@@ -78,3 +80,30 @@ def test_upload_persists_and_prunes_records(tmp_path: Path) -> None:
     page = client.get('/')
     assert page.status_code == 200
     assert b'Latest image' in page.data
+
+
+def test_upload_returns_immediately_when_not_in_debug_mode(tmp_path: Path) -> None:
+    config = ServiceConfig(
+        data_dir=tmp_path,
+        max_snapshots=5,
+        serve_history_limit=10,
+        mqtt_enabled=False,
+        upload_debug_mode=False,
+    )
+    app = create_app(config)
+    client = app.test_client()
+
+    started = time.perf_counter()
+    response = client.post(
+        '/upload',
+        data={
+            'metadata': json.dumps({'device_id': 'esp32-demo', 'timestamp': 3}),
+            'image': (io.BytesIO(_generate_image(45)), 'photo.jpg'),
+        },
+        content_type='multipart/form-data',
+    )
+    elapsed = time.perf_counter() - started
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['status'] == 'accepted'
+    assert elapsed < 0.35

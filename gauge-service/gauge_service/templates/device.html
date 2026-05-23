@@ -589,10 +589,14 @@ async function pushDirect() {
   const st = document.getElementById('push-direct-status');
   st.textContent = '…'; st.className = 'warn';
   const body = buildPayload();
-  const r = await fetch('/api/device-config/push-direct', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-  const j = await r.json();
-  if (j.ok) { st.textContent = '📡 Published to ' + j.topic; st.className = 'ok'; }
-  else       { st.textContent = '✗ ' + (j.error || 'Error'); st.className = 'err'; }
+  try {
+    const r = await fetch('/api/device-config/push-direct', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (j.ok) { st.textContent = '📡 Published to ' + j.topic; st.className = 'ok'; }
+    else       { st.textContent = '✗ ' + (j.error || 'Error'); st.className = 'err'; }
+  } catch (e) {
+    st.textContent = '✗ Network error'; st.className = 'err';
+  }
 }
 
 function viewConfigJson() {
@@ -601,6 +605,7 @@ function viewConfigJson() {
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 async function saveOtaConfig() {

@@ -517,3 +517,302 @@ def test_config_page_shows_locked_fields(tmp_path: Path, monkeypatch: pytest.Mon
     # The badge for env-locked fields should appear
     assert b'badge-env' in body or b'REBOOT' in body
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Device config API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_device_page_renders(tmp_path: Path) -> None:
+    """GET /device returns a 200 with the device config page."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.get('/device')
+    assert resp.status_code == 200
+    assert b'device_cfg' not in resp.data  # template rendered, no raw variable names
+    assert b'OTA' in resp.data
+
+
+def test_device_config_api_get_default(tmp_path: Path) -> None:
+    """GET /api/device-config returns defaults when no file exists."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.get('/api/device-config')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert 'ds18_en' in data
+    assert 'mqtt_id' in data
+    assert data['mqtt_port'] == 1883
+
+
+def test_device_config_api_save(tmp_path: Path) -> None:
+    """POST /api/device-config saves and returns ok."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    payload = {
+        'ds18_en': True, 'ds18_int': 15,
+        'sht_en': False, 'sht_int': 5,
+        'ina_en': False, 'ina_int': 2,
+        'ph_hour': 10, 'ph_min': 30, 'ph_win': 5,
+        'wifi_ssid': 'TestNet', 'wifi_pass': 's3cr3t', 'upload_ep': 'http://host/upload',
+        'ota_en': True, 'ota_url': 'http://host/api/ota/manifest',
+        'mqtt_en': False, 'mqtt_host': '', 'mqtt_port': 1883,
+        'mqtt_user': '', 'mqtt_pass': '', 'mqtt_id': 'my-esp32',
+        'dev_name': 'TestDevice', 'boot_win': 30,
+        'ntp_srv1': 'pool.ntp.org', 'ntp_srv2': 'time.google.com',
+        'ntp_tz': 'CET-1CEST,M3.5.0,M10.5.0/3',
+        'push_to_device': False,
+    }
+    resp = client.post(
+        '/api/device-config',
+        data=json.dumps(payload),
+        content_type='application/json',
+    )
+    assert resp.status_code == 200
+    result = resp.get_json()
+    assert result['ok'] is True
+    assert result['published'] is False
+
+    # Verify persisted
+    cfg_file = tmp_path / 'device_config.json'
+    assert cfg_file.exists()
+    saved = json.loads(cfg_file.read_text())
+    assert saved['ds18_en'] is True
+    assert saved['wifi_ssid'] == 'TestNet'
+    assert saved['mqtt_id'] == 'my-esp32'
+
+
+def test_device_config_api_save_push_no_mqtt(tmp_path: Path) -> None:
+    """POST /api/device-config with push_to_device=True and MQTT disabled returns publish_error."""
+    config = _base_config(tmp_path, mqtt_enabled=False)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    payload = {
+        'ds18_en': False, 'ds18_int': 10, 'sht_en': False, 'sht_int': 5,
+        'ina_en': False, 'ina_int': 2, 'ph_hour': 14, 'ph_min': 0, 'ph_win': 10,
+        'wifi_ssid': '', 'wifi_pass': '', 'upload_ep': '', 'ota_en': False, 'ota_url': '',
+        'mqtt_en': False, 'mqtt_host': '', 'mqtt_port': 1883, 'mqtt_user': '',
+        'mqtt_pass': '', 'mqtt_id': 'esp32', 'dev_name': 'ESP', 'boot_win': 30,
+        'ntp_srv1': 'pool.ntp.org', 'ntp_srv2': 'time.google.com', 'ntp_tz': 'UTC',
+        'push_to_device': True,
+    }
+    resp = client.post(
+        '/api/device-config',
+        data=json.dumps(payload),
+        content_type='application/json',
+    )
+    assert resp.status_code == 200
+    result = resp.get_json()
+    assert result['ok'] is True
+    assert result['published'] is False
+    assert result['publish_error'] is not None  # MQTT disabled → error message
+
+
+def test_device_config_publish_no_mqtt(tmp_path: Path) -> None:
+    """POST /api/device-config/publish with MQTT disabled returns 502 with error."""
+    config = _base_config(tmp_path, mqtt_enabled=False)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.post('/api/device-config/publish')
+    assert resp.status_code == 502
+    result = resp.get_json()
+    assert result['ok'] is False
+    assert 'error' in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OTA management API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_ota_status_default(tmp_path: Path) -> None:
+    """GET /api/ota/status returns mode=disabled by default."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.get('/api/ota/status')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['mode'] == 'disabled'
+
+
+def test_ota_config_save_and_get(tmp_path: Path) -> None:
+    """POST /api/ota/config persists, GET /api/ota/config reads back."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'service_auto', 'github_repo': 'owner/repo'}),
+        content_type='application/json',
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()['ok'] is True
+
+    resp = client.get('/api/ota/config')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['mode'] == 'service_auto'
+    assert data['github_repo'] == 'owner/repo'
+
+
+def test_ota_config_invalid_mode(tmp_path: Path) -> None:
+    """POST /api/ota/config with an unknown mode returns 422."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    resp = client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'invalid_mode'}),
+        content_type='application/json',
+    )
+    assert resp.status_code == 422
+
+
+def test_ota_manifest_disabled(tmp_path: Path) -> None:
+    """GET /api/ota/manifest returns 404 when mode=disabled."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.get('/api/ota/manifest')
+    assert resp.status_code == 404
+
+
+def test_ota_manifest_service_auto_no_firmware(tmp_path: Path) -> None:
+    """GET /api/ota/manifest returns 404 when mode=service_auto but no firmware cached."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'service_auto', 'github_repo': 'owner/repo'}),
+        content_type='application/json',
+    )
+
+    resp = client.get('/api/ota/manifest')
+    assert resp.status_code == 404
+
+
+def test_ota_manifest_manual_with_firmware(tmp_path: Path) -> None:
+    """GET /api/ota/manifest returns manifest JSON when mode=manual and firmware is uploaded."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    # Switch to manual mode and save
+    client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'manual', 'manual_version': 'v9.9.9', 'manual_notes': 'test fw'}),
+        content_type='application/json',
+    )
+
+    # Upload a dummy firmware file
+    dummy_bin = b'\x00' * 512
+    resp = client.post(
+        '/api/ota/upload',
+        data={
+            'firmware': (io.BytesIO(dummy_bin), 'firmware.bin'),
+            'version': 'v9.9.9',
+            'notes': 'test fw',
+        },
+        content_type='multipart/form-data',
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()['ok'] is True
+
+    # Now manifest should be available
+    resp = client.get('/api/ota/manifest')
+    assert resp.status_code == 200
+    manifest = resp.get_json()
+    assert manifest['version'] == 'v9.9.9'
+    assert '/api/ota/firmware' in manifest['url']
+    assert manifest['notes'] == 'test fw'
+
+
+def test_ota_firmware_serve(tmp_path: Path) -> None:
+    """GET /api/ota/firmware serves the uploaded binary."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'manual', 'manual_version': 'v1.0.0'}),
+        content_type='application/json',
+    )
+
+    dummy_bin = b'\xde\xad\xbe\xef' * 64
+    client.post(
+        '/api/ota/upload',
+        data={
+            'firmware': (io.BytesIO(dummy_bin), 'firmware.bin'),
+            'version': 'v1.0.0',
+        },
+        content_type='multipart/form-data',
+    )
+
+    resp = client.get('/api/ota/firmware')
+    assert resp.status_code == 200
+    assert resp.data == dummy_bin
+
+
+def test_ota_firmware_serve_no_firmware(tmp_path: Path) -> None:
+    """GET /api/ota/firmware returns 404 when no firmware is available."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    # Default mode=disabled
+    resp = client.get('/api/ota/firmware')
+    assert resp.status_code == 404
+
+
+def test_ota_upload_wrong_mode(tmp_path: Path) -> None:
+    """POST /api/ota/upload returns 409 when mode is not manual."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    dummy_bin = b'\x00' * 16
+    resp = client.post(
+        '/api/ota/upload',
+        data={'firmware': (io.BytesIO(dummy_bin), 'fw.bin'), 'version': 'v1.0.0'},
+        content_type='multipart/form-data',
+    )
+    assert resp.status_code == 409
+
+
+def test_ota_fetch_wrong_mode(tmp_path: Path) -> None:
+    """POST /api/ota/fetch returns 409 when mode is not service_auto."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.post('/api/ota/fetch')
+    assert resp.status_code == 409
+
+
+def test_ota_upload_missing_version(tmp_path: Path) -> None:
+    """POST /api/ota/upload without version returns 400."""
+    config = _base_config(tmp_path)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    client.post(
+        '/api/ota/config',
+        data=json.dumps({'mode': 'manual'}),
+        content_type='application/json',
+    )
+
+    dummy_bin = b'\x00' * 16
+    resp = client.post(
+        '/api/ota/upload',
+        data={'firmware': (io.BytesIO(dummy_bin), 'fw.bin')},
+        content_type='multipart/form-data',
+    )
+    assert resp.status_code == 400
+

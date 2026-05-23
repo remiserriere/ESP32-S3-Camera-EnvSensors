@@ -27,14 +27,15 @@ Custom PlatformIO/Arduino firmware for the **Freenove ESP32-S3 WROOM** with OV26
    - [Topics](#topics)
    - [Payload reference](#payload-reference)
    - [Home Assistant examples](#home-assistant-examples)
-6. [Power Strategy](#power-strategy)
-7. [BTHome / Home Assistant Integration](#bthome--home-assistant-integration)
-8. [NTP & Time Synchronisation](#ntp--time-synchronisation)
-9. [HTTP Photo Upload Service](#http-photo-upload-service)
-10. [Build & Flash](#build--flash)
-11. [CI / CD & Releases](#ci--cd--releases)
-12. [OTA Firmware Updates](#ota-firmware-updates)
-13. [Known Limitations / TODOs](#known-limitations--todos)
+6. [Gauge Service — Device Config & OTA](#gauge-service--device-config--ota)
+7. [Power Strategy](#power-strategy)
+8. [BTHome / Home Assistant Integration](#bthome--home-assistant-integration)
+9. [NTP & Time Synchronisation](#ntp--time-synchronisation)
+10. [HTTP Photo Upload Service](#http-photo-upload-service)
+11. [Build & Flash](#build--flash)
+12. [CI / CD & Releases](#ci--cd--releases)
+13. [OTA Firmware Updates](#ota-firmware-updates)
+14. [Known Limitations / TODOs](#known-limitations--todos)
 
 ---
 
@@ -468,6 +469,44 @@ An empty payload is silently ignored by the device.
 
 ---
 
+## Gauge Service — Device Config & OTA
+
+The **gauge-service** web interface (at `http://<host>:8081`) now includes a dedicated **Device** page (`/device`) for managing the ESP32 remotely without connecting a USB cable.
+
+### Device configuration page (`/device`)
+
+All `DeviceConfig` fields can be edited through a tabbed web UI:
+
+- **Sensors** — enable/disable DS18B20, SHT3x, INA219 + polling intervals
+- **Schedule** — daily photo hour, minute, window
+- **Network** — Wi-Fi SSID/password, upload endpoint
+- **MQTT (device)** — device broker, credentials, client ID
+- **Identity & NTP** — BLE device name, boot window, NTP servers, timezone
+- **OTA updates** — firmware update mode + firmware management
+
+Click **Save & Push to device** to persist the config locally **and** publish it as a retained MQTT message to `<mqtt_id>/config/set`. On its next Wi-Fi session, the device will pick up the retained message and apply the configuration to NVS.
+
+### OTA firmware management (via `/device` → OTA tab or `/config` → OTA section)
+
+Four modes — configure once, the device polls `/api/ota/manifest` automatically.
+
+| Mode | `OTA_MANIFEST_URL` points to | Who downloads from GitHub |
+|---|---|---|
+| `disabled` | — (404) | — |
+| `github_auto` | gauge-service `/api/ota/manifest` | **The device** directly from `github.com` |
+| `service_auto` | gauge-service `/api/ota/manifest` | **The service** (caches locally) |
+| `manual` | gauge-service `/api/ota/manifest` | — (user uploads .bin) |
+
+**Quick setup:**
+
+1. Go to `/config` → OTA section, set mode and GitHub repo, save.
+2. Go to `/device` → OTA tab, check the pre-filled manifest URL.
+3. Push the OTA config to the device (the "Push OTA config to device" button).
+4. For `service_auto`: click **Download latest from GitHub** to cache the binary.
+5. For `manual`: upload your .bin file and set a version string (must differ from device's current firmware to trigger update — use `99.99.99` to force).
+
+---
+
 ## Power Strategy
 
 | Wake phase | Radio state | Typical current |
@@ -767,7 +806,21 @@ docker pull ghcr.io/remiserriere/gauge-service:v1.2.3
 
 During the daily Wi-Fi session, the device fetches `g_deviceConfig.otaManifestUrl` and compares the remote version to `FIRMWARE_VERSION`. If newer, it downloads and flashes, then reboots.
 
-**Self-hosted manifest** (plain HTTP — recommended):
+The **gauge-service** can serve this manifest and manage the firmware update lifecycle via its `/device` page (OTA tab). Four modes are available:
+
+| Mode | Description |
+|---|---|
+| `disabled` | No OTA — `/api/ota/manifest` returns 404 |
+| `github_auto` | Manifest generated on-the-fly from GitHub Releases API; ESP32 downloads directly from GitHub |
+| `service_auto` | Service downloads and caches the binary from GitHub; ESP32 downloads from the service |
+| `manual` | User uploads a specific .bin; service serves it to the ESP32 |
+
+Set the device's OTA manifest URL via MQTT or the serial CLI to:
+```
+http://<gauge-service-host>:8081/api/ota/manifest
+```
+
+**Self-hosted manifest** (plain HTTP — recommended for custom servers):
 
 ```json
 {
@@ -778,6 +831,8 @@ During the daily Wi-Fi session, the device fetches `g_deviceConfig.otaManifestUr
 ```
 
 Configure the manifest URL via MQTT (`{"ota_url": "..."}`) or the serial CLI `[4] OTA`.
+
+> **Note on manual mode and version checks:** The device compares the manifest `version` against its `FIRMWARE_VERSION`. If neither parses as semver, string inequality is used — any *different* string triggers an update. Use `99.99.99` to force a re-flash regardless of the current version on the device.
 
 ### 2 — ArduinoOTA (manual, maintenance mode)
 

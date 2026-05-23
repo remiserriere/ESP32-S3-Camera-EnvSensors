@@ -146,6 +146,7 @@
   <h1>⚙️ Settings — {{ config.device_name }}</h1>
   <a href="/">← Dashboard</a>
   <a href="/setup">🔧 Gauge calibration</a>
+  <a href="/device">🖥️ Device</a>
   <button class="btn-danger" onclick="rebootService()">🔄 Reboot service</button>
 </header>
 
@@ -364,6 +365,45 @@
         <input type="text" id="f-home_assistant_discovery_prefix"
                name="home_assistant_discovery_prefix"
                value="{{ config.home_assistant_discovery_prefix }}"
+               {% if f in locked %}disabled{% endif %}>
+      </div>
+    </div>
+
+    <!-- ── OTA / GitHub ── -->
+    <div class="card">
+      <h2>OTA firmware management</h2>
+      <p class="section-hint">
+        Configure how the gauge service handles firmware updates for the ESP32.
+        Full OTA management (firmware upload, device push) is available on the
+        <a href="/device" style="color:#93c5fd">🖥️ Device page</a>.
+      </p>
+
+      {% set f = "ota_mode" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-ota_mode">
+          OTA mode
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <select id="f-ota_mode" name="ota_mode"
+                {% if f in locked %}disabled{% endif %}>
+          {% for m in ota_modes %}
+          <option value="{{ m }}" {% if config.ota_mode == m %}selected{% endif %}>
+            {{ {"disabled": "Disabled (default)", "github_auto": "GitHub auto — ESP32 downloads from GitHub", "service_auto": "Service auto — service caches & serves firmware", "manual": "Manual upload"}[m] }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {% set f = "github_repo" %}
+      <div class="field-row{% if f in locked %} field-locked{% endif %}">
+        <label class="field-label" for="f-github_repo">
+          GitHub repository
+          <small>(owner/repo — used by github_auto &amp; service_auto)</small>
+          {% if f in locked %}<span class="badge badge-env">🔒 ENV</span>{% endif %}
+        </label>
+        <input type="text" id="f-github_repo" name="github_repo"
+               placeholder="remiserriere/ESP32-S3-Camera-EnvSensors"
+               value="{{ config.github_repo }}"
                {% if f in locked %}disabled{% endif %}>
       </div>
     </div>

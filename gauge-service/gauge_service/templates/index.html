@@ -7,12 +7,28 @@
     body { font-family: Arial, sans-serif; margin: 2rem; background: #111827; color: #f9fafb; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
     .card { background: #1f2937; border-radius: 12px; padding: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,.2); }
-    img { max-width: 100%; border-radius: 8px; }
+    img { max-width: 100%; border-radius: 8px; display: block; }
     table { width: 100%; border-collapse: collapse; }
     td, th { padding: .45rem; border-bottom: 1px solid #374151; text-align: left; vertical-align: top; }
     .muted { color: #9ca3af; font-size: .95rem; }
     a { color: #93c5fd; }
     ul { padding-left: 1rem; }
+    .debug-btn {
+      margin-top: .6rem;
+      padding: .35rem .9rem;
+      background: #374151;
+      color: #f9fafb;
+      border: 1px solid #4b5563;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: .9rem;
+    }
+    .debug-btn.active {
+      background: #1d4ed8;
+      border-color: #3b82f6;
+    }
+    .debug-btn:hover { opacity: .85; }
+    .img-link { display: block; }
   </style>
 </head>
 <body>
@@ -22,7 +38,17 @@
     <section class="card">
       <h2>Latest image</h2>
       <p class="muted">{{ latest.received_at }}</p>
-      <a href="{{ latest.image_url }}"><img src="{{ latest.image_url }}" alt="latest gauge image"></a>
+      <a class="img-link" href="{{ latest.image_url }}" id="link-{{ latest.id }}">
+        <img id="img-{{ latest.id }}"
+             src="{{ latest.image_url }}"
+             data-original="{{ latest.image_url }}"
+             data-debug="/debug_image/{{ latest.id }}"
+             alt="latest gauge image">
+      </a>
+      <button class="debug-btn" id="btn-{{ latest.id }}"
+              onclick="toggleDebug('{{ latest.id }}')">
+        🔍 Show debug overlay
+      </button>
     </section>
     <section class="card">
       <h2>Extracted data</h2>
@@ -32,7 +58,14 @@
         <tr><th>Estimated</th><td>{{ latest.analysis.estimated }}</td></tr>
         <tr><th>Needle angle</th><td>{{ latest.analysis.needle_angle }}°</td></tr>
         <tr><th>Scale range</th><td>{{ latest.analysis.low_angle }}° → {{ latest.analysis.high_angle }}°</td></tr>
-        <tr><th>Detection source</th><td>{{ latest.analysis.source }}</td></tr>
+        <tr><th>Span detected</th><td>{{ latest.analysis.source.span_degrees }}° (expected {{ config.analysis_expected_span_deg }}°)</td></tr>
+        <tr><th>Circle</th><td>({{ latest.analysis.circle.x }}, {{ latest.analysis.circle.y }}) r={{ latest.analysis.circle.r }}</td></tr>
+        <tr><th>Detection source</th><td>
+          needle: {{ latest.analysis.source.needle }} ({{ latest.analysis.source.needle_confidence }})<br>
+          scale: {{ latest.analysis.source.scale }} ({{ latest.analysis.source.scale_confidence }})<br>
+          circle conf: {{ latest.analysis.source.circle_confidence }}
+        </td></tr>
+        <tr><th>Mirror mode</th><td>{{ config.analysis_mirror_mode }}</td></tr>
         <tr><th>Metadata</th><td><pre>{{ latest.metadata | tojson(indent=2) }}</pre></td></tr>
       </table>
     </section>
@@ -47,12 +80,33 @@
       {% for record in records %}
       <li>
         <a href="{{ record.image_url }}">{{ record.image_name }}</a>
-        — {{ record.analysis.percentage }}% (confidence {{ record.analysis.confidence }}%, estimated={{ record.analysis.estimated }})
+        — {{ record.analysis.percentage }}% (conf {{ record.analysis.confidence }}%, est={{ record.analysis.estimated }})
+        — <a href="/debug_image/{{ record.id }}" target="_blank">🔍 debug</a>
       </li>
       {% else %}
       <li>No stored photo.</li>
       {% endfor %}
     </ul>
   </section>
+
+  <script>
+    function toggleDebug(id) {
+      const img = document.getElementById('img-' + id);
+      const btn = document.getElementById('btn-' + id);
+      const link = document.getElementById('link-' + id);
+      const isDebug = btn.classList.contains('active');
+      if (isDebug) {
+        img.src = img.dataset.original;
+        link.href = img.dataset.original;
+        btn.textContent = '🔍 Show debug overlay';
+        btn.classList.remove('active');
+      } else {
+        img.src = img.dataset.debug;
+        link.href = img.dataset.debug;
+        btn.textContent = '🔍 Hide debug overlay';
+        btn.classList.add('active');
+      }
+    }
+  </script>
 </body>
 </html>

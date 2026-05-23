@@ -1,6 +1,7 @@
 services:
   gauge-service:
-    image: ghcr.io/remiserriere/esp32-s3-camera-envsensors-gauge-service:latest
+    #image: ghcr.io/remiserriere/esp32-s3-camera-envsensors-gauge-service:latest
+    build: .
     container_name: gauge-service
     restart: unless-stopped
     ports:
@@ -15,11 +16,11 @@ services:
       MQTT_ENABLED: "true"
       MQTT_HOST: mqtt.local
       MQTT_PORT: 1883
-      MQTT_USERNAME: homeassistant
-      MQTT_PASSWORD: changeme
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
       MQTT_USE_SSL: "false"
       MQTT_CLIENT_ID: gaz-tank-gauge-service
-      MQTT_TOPIC_ROOT: home/gaz_tank_gauge
+      MQTT_TOPIC_ROOT: gaz_tank_gauge
       HA_DISCOVERY_PREFIX: homeassistant
       ANALYSIS_LOW_PERCENT: 5
       ANALYSIS_HIGH_PERCENT: 95

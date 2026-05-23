@@ -48,6 +48,19 @@ class StorageManager:
         records = self.list_records(limit=1)
         return records[0] if records else None
 
+    def get_record(self, record_id: str) -> dict[str, Any] | None:
+        path = self.config.records_dir / f"{record_id}.json"
+        if not path.exists():
+            return None
+        with path.open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def get_image_bytes(self, image_name: str) -> bytes | None:
+        path = self.config.photos_dir / image_name
+        if not path.exists():
+            return None
+        return path.read_bytes()
+
     def _prune(self) -> None:
         files = sorted(self.config.records_dir.glob("*.json"))
         overflow = len(files) - self.config.max_snapshots

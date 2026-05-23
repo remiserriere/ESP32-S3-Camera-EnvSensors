@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+
+_RECORD_ID_RE = re.compile(r'^[A-Za-z0-9]+$')
 
 from .analyzer import GaugeAnalyzer
 from .config import ServiceConfig
@@ -50,6 +53,23 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     @app.get("/photos/<path:filename>")
     def photos(filename: str) -> Any:
         return send_from_directory(service_config.photos_dir, filename)
+
+    @app.get("/debug_image/<record_id>")
+    def debug_image(record_id: str) -> Any:
+        if not _RECORD_ID_RE.match(record_id):
+            return jsonify({"error": "Invalid record ID"}), 400
+        record = storage.get_record(record_id)
+        if record is None:
+            return jsonify({"error": "Record not found"}), 404
+        image_bytes = storage.get_image_bytes(record["image_name"])
+        if image_bytes is None:
+            return jsonify({"error": "Image file not found"}), 404
+        try:
+            debug_bytes = analyzer.draw_debug_image(image_bytes, record["analysis"])
+        except Exception as exc:
+            app.logger.error("Debug image generation failed: %s", exc)
+            return jsonify({"error": "Failed to generate debug image"}), 500
+        return Response(debug_bytes, mimetype="image/jpeg")
 
     @app.post("/upload")
     def upload() -> Any:

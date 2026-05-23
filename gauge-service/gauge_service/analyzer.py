@@ -84,6 +84,103 @@ class GaugeAnalyzer:
             },
         ).as_dict()
 
+    def draw_debug_image(self, image_bytes: bytes, analysis: dict) -> bytes:
+        """Return JPEG bytes of the corrected+resized image with a full debug overlay."""
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("Unable to decode image payload")
+
+        # Apply the same pre-processing as analyze() so overlay coords match exactly.
+        corrected = self._apply_mirror_correction(image)
+        frame = self._resize_if_needed(corrected)
+
+        cx = float(analysis["circle"]["x"])
+        cy = float(analysis["circle"]["y"])
+        cr = float(analysis["circle"]["r"])
+        needle_angle = float(analysis["needle_angle"])
+        low_angle = float(analysis["low_angle"])
+        high_angle = float(analysis["high_angle"])
+        percentage = float(analysis["percentage"])
+        span_deg = float(analysis["source"]["span_degrees"])
+
+        h, w = frame.shape[:2]
+        font_scale = max(0.45, min(1.4, w / 900.0))
+
+        def angle_pt(deg: float, r_ratio: float = 1.0) -> tuple[int, int]:
+            rad = math.radians(deg)
+            return (int(round(cx + math.cos(rad) * cr * r_ratio)),
+                    int(round(cy - math.sin(rad) * cr * r_ratio)))
+
+        out = frame.copy()
+
+        # ── Detected circle (blue) ───────────────────────────────────────────
+        cv2.circle(out, (int(cx), int(cy)), int(cr), (200, 80, 0), 2)
+
+        # ── Center dot (white) ──────────────────────────────────────────────
+        cv2.circle(out, (int(cx), int(cy)), max(5, int(cr * 0.018)), (255, 255, 255), -1)
+
+        # ── Scale arc – detected span (cyan) ────────────────────────────────
+        arc_angles = np.linspace(low_angle, low_angle + span_deg, 200)
+        arc_pts = np.array([angle_pt(a, 0.82) for a in arc_angles], dtype=np.int32)
+        cv2.polylines(out, [arc_pts], False, (220, 200, 0), 3)
+
+        # ── Expected span arc (grey) – for comparison ───────────────────────
+        exp_angles = np.linspace(low_angle, low_angle + self.config.analysis_expected_span_deg, 120)
+        exp_pts = np.array([angle_pt(a, 0.88) for a in exp_angles], dtype=np.int32)
+        cv2.polylines(out, [exp_pts], False, (130, 130, 130), 1)
+
+        # ── Tick marks every 10 % along detected arc ────────────────────────
+        for frac in np.linspace(0.0, 1.0, 11):
+            tick_angle = low_angle + frac * span_deg
+            cv2.line(out, angle_pt(tick_angle, 0.77), angle_pt(tick_angle, 0.86), (180, 180, 0), 2)
+
+        # ── Low angle marker (green) ─────────────────────────────────────────
+        cv2.line(out, angle_pt(low_angle, 0.58), angle_pt(low_angle, 0.96), (0, 210, 60), 3)
+        lbl_pt = angle_pt(low_angle, 1.10)
+        cv2.putText(out, f"L {low_angle:.1f}deg", lbl_pt,
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.68, (0, 210, 60), 2, cv2.LINE_AA)
+
+        # ── High angle marker (orange-red) ──────────────────────────────────
+        cv2.line(out, angle_pt(high_angle, 0.58), angle_pt(high_angle, 0.96), (0, 80, 230), 3)
+        lbl_pt = angle_pt(high_angle, 1.10)
+        cv2.putText(out, f"H {high_angle:.1f}deg", lbl_pt,
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.68, (0, 80, 230), 2, cv2.LINE_AA)
+
+        # ── Needle (bright orange) ───────────────────────────────────────────
+        needle_w = max(2, int(cr * 0.009))
+        cv2.line(out, angle_pt(needle_angle + 180, 0.18), angle_pt(needle_angle, 0.87),
+                 (0, 140, 255), needle_w)
+        cv2.circle(out, angle_pt(needle_angle, 0.87), max(5, int(cr * 0.022)), (0, 140, 255), -1)
+        n_lbl = angle_pt(needle_angle, 1.02)
+        cv2.putText(out, f"N {needle_angle:.1f}deg", n_lbl,
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.68, (0, 140, 255), 2, cv2.LINE_AA)
+
+        # ── Info panel (top-left) ────────────────────────────────────────────
+        src = analysis["source"]
+        info_lines = [
+            f"Reading:    {percentage:.1f}%",
+            f"Confidence: {analysis['confidence']:.1f}%  estimated={analysis['estimated']}",
+            f"Needle:     {needle_angle:.1f}deg  [{src['needle']}  conf={src['needle_confidence']:.2f}]",
+            f"Low:        {low_angle:.1f}deg",
+            f"High:       {high_angle:.1f}deg",
+            f"Scale src:  {src['scale']}  conf={src['scale_confidence']:.2f}",
+            f"Span det.:  {span_deg:.1f}deg   expected={self.config.analysis_expected_span_deg:.0f}deg",
+            f"Circle:     ({cx:.0f},{cy:.0f}) r={cr:.0f}  conf={src['circle_confidence']:.2f}",
+            f"Mirror:     {self.config.analysis_mirror_mode or 'none'}",
+        ]
+        line_h = max(22, int(font_scale * 28))
+        bx, by = 8, 8
+        bw = max(380, int(font_scale * 480))
+        bh = len(info_lines) * line_h + 14
+        cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (18, 18, 18), -1)
+        cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (150, 150, 150), 1)
+        for i, line in enumerate(info_lines):
+            cv2.putText(out, line, (bx + 8, by + line_h * (i + 1)),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.54, (225, 225, 225), 1, cv2.LINE_AA)
+
+        _, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        return bytes(buf)
+
     def _apply_mirror_correction(self, image: np.ndarray) -> np.ndarray:
         mode = self.config.analysis_mirror_mode
         if mode in {"none", ""}:

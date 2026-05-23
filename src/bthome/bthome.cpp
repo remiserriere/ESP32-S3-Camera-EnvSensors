@@ -11,10 +11,10 @@
 //
 // Object IDs used:
 //   0x01 – Battery          uint8,   factor 1     %
-//   0x02 – Temperature      int16,   factor 0.01  °C
+//   0x02 – Temperature      int16,   factor 0.01  °C  (one entry per sensor, ascending)
 //   0x03 – Humidity         uint16,  factor 0.01  %
+//   0x0B – Power            uint24,  factor 0.01  W
 //   0x0C – Voltage          uint16,  factor 0.001 V
-//   0x0D – Power            uint24,  factor 0.01  W
 //   0x43 – Current          uint16,  factor 0.001 A
 
 static constexpr uint8_t BTHOME_DEVICE_INFO = 0x40;  // version 2, non-encrypted
@@ -51,21 +51,22 @@ static std::vector<uint8_t> buildServiceData(const BtHomePayload& p) {
     if (p.hasBattery) {
         appendU8(data, 0x01, p.batteryPercent);
     }
-    if (p.hasTemperature) {
-        int16_t raw = (int16_t)roundf(p.temperature * 100.0f);
+    for (float t : p.temperatures) {
+        int16_t raw = (int16_t)roundf(t * 100.0f);
         appendI16(data, 0x02, raw);
     }
     if (p.hasHumidity) {
         uint16_t raw = (uint16_t)roundf(p.humidity * 100.0f);
         appendU16(data, 0x03, raw);
     }
+    // 0x0B Power MUST come before 0x0C Voltage (ascending ID order required by BTHome spec)
+    if (p.hasPower) {
+        uint32_t raw = (uint32_t)roundf(p.powerW * 100.0f);
+        appendU24(data, 0x0B, raw);
+    }
     if (p.hasVoltage) {
         uint16_t raw = (uint16_t)roundf(p.voltage * 1000.0f);
         appendU16(data, 0x0C, raw);
-    }
-    if (p.hasPower) {
-        uint32_t raw = (uint32_t)roundf(p.powerW * 100.0f);
-        appendU24(data, 0x0D, raw);
     }
     if (p.hasCurrent) {
         uint16_t raw = (uint16_t)roundf(p.currentA * 1000.0f);
@@ -83,16 +84,26 @@ void bthome::advertise(const BtHomePayload& payload) {
 
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
     pAdv->reset();
-    pAdv->setScanResponse(false);
 
+    // Main advertisement packet: flags + BTHome service data only.
+    // Keeping the name out of the main packet is critical — a long device name
+    // (e.g. "rssa-gazmeter01" = 15 chars) pushes the total over the 31-byte BLE limit,
+    // causing "Advertisement data length exceeded" and the service data being dropped.
     NimBLEAdvertisementData advData;
     advData.setFlags(0x06);  // BR/EDR not supported, LE General Discoverable
-    advData.setName(g_deviceConfig.deviceName);
     advData.setServiceData(NimBLEUUID((uint16_t)BTHOME_SERVICE_UUID),
                            std::string(reinterpret_cast<const char*>(serviceData.data()),
                                        serviceData.size()));
 
+    // Scan response packet: name only (sent on explicit scan request).
+    // Home Assistant reads the name from scan responses fine.
+    NimBLEAdvertisementData scanResp;
+    scanResp.setName(g_deviceConfig.deviceName);
+
+    pAdv->setScanResponse(true);
     pAdv->setAdvertisementData(advData);
+    pAdv->setScanResponseData(scanResp);
+
     // NimBLE start() takes duration in seconds; round up to at least 1 s
     uint32_t advSeconds = (BTHOME_ADV_DURATION_MS + 999) / 1000;
     pAdv->start(advSeconds, nullptr);

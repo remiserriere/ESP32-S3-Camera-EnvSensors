@@ -95,14 +95,21 @@ uint32_t scheduler::nextSleepSeconds(const TaskFlags& completed) {
 }
 
 void scheduler::deepSleep(uint32_t seconds) {
-    // Persist epoch so we can restore after power cycle
-    RtcState& rtc      = getRtcState();
-    rtc.lastEpochS     = time_manager::nowEpoch();
-    rtc.lastEpochSetMs = 0;  // millis() will be ~0 after wakeup
-    nvs::saveEpoch(rtc.lastEpochS);
+    RtcState& rtc  = getRtcState();
+    int64_t   now  = time_manager::nowEpoch();
+
+    // NVS: save the actual current time for power-cycle recovery.
+    nvs::saveEpoch(now);
     nvs::end();
 
-    Serial.printf("[SLEEP] Entering deep sleep for %u seconds\n", seconds);
+    // RTC: save the *projected wake time* (now + sleep duration).
+    // On wakeup, millis() restarts from ~0, so:
+    //   estimated = lastEpochS + millis()/1000 ≈ lastEpochS = projected wake time  ✓
+    // Without this, the device would perpetually think it is still at sleep time.
+    rtc.lastEpochS     = now + (int64_t)seconds;
+    rtc.lastEpochSetMs = 0;
+
+    Serial.printf("[SLEEP] Entering deep sleep for %u seconds\r\n", seconds);
     Serial.flush();
     delay(100);
 

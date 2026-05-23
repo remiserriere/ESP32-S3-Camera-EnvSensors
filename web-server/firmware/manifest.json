@@ -1,0 +1,5 @@
+{
+  "version": "v1.2.3",
+  "url": "http://192.168.1.100:8080/firmware/firmware.bin",
+  "notes": "Optional description"
+}

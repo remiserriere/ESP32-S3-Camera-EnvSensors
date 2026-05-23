@@ -1,5 +1,7 @@
 #pragma once
+#include <array>
 #include <cstdint>
+#include <vector>
 
 // ─────────────────────────────────────────────
 //  RTC memory – survives deep sleep, lost on power cycle
@@ -45,6 +47,11 @@ namespace nvs {
     // Last photo metadata
     void saveLastPhoto(int32_t year, int32_t dayOfYear);
     void loadLastPhoto(int32_t& year, int32_t& dayOfYear);
+
+    // DS18B20 ROM addresses – stored for consistent sensor ordering across boots.
+    // Keys: "ds_n" (count uint8) + "ds_0".."ds_N" (8-byte blobs, up to 4 sensors).
+    void saveDs18b20Addresses(const std::vector<std::array<uint8_t, 8>>& addrs);
+    std::vector<std::array<uint8_t, 8>> loadDs18b20Addresses();
 
     void end();
 }

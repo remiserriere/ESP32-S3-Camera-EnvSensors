@@ -36,4 +36,9 @@ namespace mqtt_config {
     // Returns true if a config update was received and applied.
     bool syncFromBroker();
 
+    // Connect to broker and publish a heartbeat to <clientId>/alive.
+    // Useful for diagnostics. WiFi must already be connected.
+    // Returns true on success.
+    bool publishAlive();
+
 } // namespace mqtt_config

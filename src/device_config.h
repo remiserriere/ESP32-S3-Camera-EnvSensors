@@ -18,10 +18,10 @@
 
 struct DeviceConfig {
     // ── Sensor presence & polling intervals ──────────────────────────────────
-    bool    ds18b20Enabled;         // default: true
+    bool    ds18b20Enabled;         // default: DS18B20_ENABLED
     uint8_t ds18b20IntervalMin;     // default: DS18B20_INTERVAL_MIN
 
-    bool    sht3xEnabled;           // default: true
+    bool    sht3xEnabled;           // default: SHT3X_ENABLED
     uint8_t sht3xIntervalMin;       // default: SHT3X_INTERVAL_MIN
 
     bool    ina219Enabled;          // default: INA219_ENABLED
@@ -51,6 +51,17 @@ struct DeviceConfig {
 
     // ── BLE ──────────────────────────────────────────────────────────────────
     char    deviceName[32];         // default: BTHOME_DEVICE_NAME
+
+    // ── Boot configuration window ────────────────────────────────────────────
+    // Seconds CLI + web config server are available at every boot/wake.
+    // 5 s are always reserved for CLI regardless of this value.
+    // 0 = web disabled (only the 5-second CLI safety window).
+    uint8_t bootWindowSec;          // default: BOOT_WINDOW_SEC
+
+    // ── NTP & Timezone ───────────────────────────────────────────────────────
+    char    ntpServer1[64];         // default: NTP_SERVER_1
+    char    ntpServer2[64];         // default: NTP_SERVER_2
+    char    ntpTimezone[64];        // default: NTP_TIMEZONE  (POSIX TZ string)
 };
 
 // Global config instance – populated by device_config::load() at startup.

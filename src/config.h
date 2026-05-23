@@ -4,8 +4,8 @@
 // ─────────────────────────────────────────────
 //  Wi-Fi
 // ─────────────────────────────────────────────
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID      "WIFI_SSID"
+#define WIFI_PASSWORD  "WIFI_PASSWORD"
 #define WIFI_TIMEOUT_MS 15000
 
 // ─────────────────────────────────────────────
@@ -21,28 +21,30 @@
 // ─────────────────────────────────────────────
 //  DS18B20 (OneWire, chained)
 // ─────────────────────────────────────────────
-#define DS18B20_PIN            14       // GPIO pin for OneWire bus – adjust to wiring
+#define DS18B20_PIN            1        // GPIO pin for OneWire bus (JTAG disabled in setup(), pins 39-42 reclaimed as GPIO)
 #define DS18B20_RESOLUTION     12       // 9..12 bits
 #define DS18B20_INTERVAL_MIN   10       // Read every N minutes
+#define DS18B20_ENABLED        false     // set false if not connected
 
 // ─────────────────────────────────────────────
 //  SHT3x (I2C)
 // ─────────────────────────────────────────────
 #define SHT3X_I2C_ADDR         0x44     // or 0x45 depending on ADDR pin
 #define SHT3X_INTERVAL_MIN     5        // Read every N minutes
+#define SHT3X_ENABLED          false     // set false if not connected
 
 // ─────────────────────────────────────────────
 //  INA219 (I2C – voltage/current measurement)
 // ─────────────────────────────────────────────
 #define INA219_I2C_ADDR        0x40     // default I2C address
 #define INA219_INTERVAL_MIN    2        // Read every N minutes
-#define INA219_ENABLED         true     // set false if not connected
+#define INA219_ENABLED         false     // set false if not connected
 
 // ─────────────────────────────────────────────
 //  I2C Bus
 // ─────────────────────────────────────────────
-#define I2C_SDA_PIN            3        // TODO: verify against Freenove pinout
-#define I2C_SCL_PIN            2        // TODO: verify against Freenove pinout
+#define I2C_SDA_PIN            2        // TODO: verify against Freenove pinout
+#define I2C_SCL_PIN            42       // TODO: verify against Freenove pinout
 #define I2C_FREQ_HZ            400000
 
 // ─────────────────────────────────────────────
@@ -68,6 +70,14 @@
 #define BTHOME_SERVICE_UUID    0xFCD2
 // Advertising duration in ms – keep short to save energy
 #define BTHOME_ADV_DURATION_MS 3000
+
+// ─────────────────────────────────────────────
+//  Boot configuration window
+// ─────────────────────────────────────────────
+// Seconds to keep CLI + web config server alive at every boot/wake.
+// 5 seconds are always reserved for CLI regardless of this value.
+// Set 0 to disable the web interface (only the 5-second CLI safety window).
+#define BOOT_WINDOW_SEC  30
 
 // ─────────────────────────────────────────────
 //  Deep sleep / scheduler

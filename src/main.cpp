@@ -14,6 +14,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <vector>
+#include "driver/gpio.h"   // gpio_reset_pin – reclaims JTAG pins as normal GPIO
 
 #include "config.h"
 #include "version.h"
@@ -80,13 +81,13 @@ static void runSensorTasks(const TaskFlags& flags) {
     // ── Publish over BLE/BTHome ──────────────────
     BtHomePayload payload = {};
 
-    // Use first DS18B20 as primary temperature (or SHT3x if DS18B20 absent)
-    if (!ds18b20Readings.empty() && ds18b20Readings[0].valid) {
-        payload.temperature    = ds18b20Readings[0].temperatureC;
-        payload.hasTemperature = true;
-    } else if (sht3xReading.valid) {
-        payload.temperature    = sht3xReading.temperatureC;
-        payload.hasTemperature = true;
+    // DS18B20 temperatures in stored address order (consistent HA entity mapping)
+    for (auto& r : ds18b20Readings) {
+        if (r.valid) payload.temperatures.push_back(r.temperatureC);
+    }
+    // SHT3x temperature appended after DS18B20s
+    if (sht3xReading.valid) {
+        payload.temperatures.push_back(sht3xReading.temperatureC);
     }
 
     if (sht3xReading.valid) {
@@ -175,7 +176,7 @@ static void runPhotoTask() {
         Serial.println("[PHOTO] Upload successful");
     } else {
         rtc.photoRetryCount++;
-        Serial.printf("[PHOTO] Upload failed (HTTP %d), retry %u\n", code, rtc.photoRetryCount);
+        Serial.printf("[PHOTO] Upload failed (HTTP %d), retry %u\r\n", code, rtc.photoRetryCount);
     }
 }
 
@@ -183,26 +184,48 @@ static void runPhotoTask() {
 //  Arduino setup() – runs on every wake/boot
 // ─────────────────────────────────────────────
 void setup() {
+    // ── Reclaim JTAG pins (GPIO 39-42) as normal GPIO ────────────────────
+    // ESP32-S3 reserves GPIO 39-42 for the external JTAG interface at reset.
+    // gpio_reset_pin() routes each pad through the GPIO matrix instead,
+    // making them fully usable as regular IO (OneWire, etc.).
+    // No efuse is burned – reversible by re-flashing with JTAG enabled.
+    gpio_reset_pin(GPIO_NUM_39);
+    gpio_reset_pin(GPIO_NUM_40);
+    gpio_reset_pin(GPIO_NUM_41);
+    gpio_reset_pin(GPIO_NUM_42);
+
     Serial.begin(115200);
-    delay(200);  // settle USB CDC
+    delay(100);  // settle UART (CH340 on USB-SERIAL port, stays alive during deep sleep)
+
+    // ── Distinguish cold boot from deep-sleep timer wake ─────────────────
+    // Use the RTC memory magic sentinel – reliable across all reset sources
+    // (power-on, reset pin, watchdog, JTAG, deep sleep timer).
+    // esp_sleep_get_wakeup_cause() is NOT used because it returns UNDEFINED
+    // for JTAG-triggered resets even after a deep sleep cycle.
+    // magic is set by time_manager::init() on first cold boot, persists in RTC RAM.
+    bool isColdBoot = (getRtcState().magic != RTC_MAGIC);
 
     // ── Load runtime configuration from NVS (must be first) ─────────────
     device_config::load();
 
-    Serial.printf("\n\n=== Boot #%u  fw:%s  dev:%s ===\n",
+    Serial.printf("\r\n\r\n=== Boot #%u  fw:%s  dev:%s  [%s] ===\r\n",
                   getRtcState().bootCount + 1, FIRMWARE_VERSION,
-                  g_deviceConfig.deviceName);
+                  g_deviceConfig.deviceName,
+                  isColdBoot ? "COLD BOOT" : "DEEP SLEEP WAKE");
 
-    // ── Serial CLI config window (3 s) ───────────────────────────────────
-    // Press any key in a terminal at 115200 baud to open the config menu.
-    serial_cli::offerConfigWindow(3000);
+    // ── Serial CLI + web config window (cold boot only) ──────────────────
+    // On deep-sleep wakes this is skipped entirely to save time and power.
+    if (isColdBoot) {
+        serial_cli::offerConfigWindow();
+    }
 
     // ── Open runtime NVS namespace ───────────────────────────────────────
     nvs::begin();
 
-    // ── Maintenance mode check ───────────────────────────────────────────
+    // ── Maintenance mode check (cold boot only) ──────────────────────────
     // Triggered by holding OTA_MAINTENANCE_GPIO low at boot, or by a NVS flag.
-    if (ota::isMaintenanceModeRequested()) {
+    // On deep-sleep wakes, skip (press reset to enter maintenance mode).
+    if (isColdBoot && ota::isMaintenanceModeRequested()) {
         Serial.println("[MAIN] Maintenance mode requested – entering ArduinoOTA standby");
         ota::enterMaintenanceMode(OTA_MAINTENANCE_TIMEOUT_MS);
         // Falls through if no OTA push arrives within the timeout.
@@ -221,13 +244,24 @@ void setup() {
         }
     }
 
+    // ── Display current time ─────────────────────────────────────────────
+    if (time_manager::isTrusted()) {
+        struct tm now_tm;
+        time_manager::nowLocal(now_tm);
+        char timeBuf[32];
+        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &now_tm);
+        Serial.printf("[TIME] %s\r\n", timeBuf);
+    } else {
+        Serial.println("[TIME] Heure inconnue (NTP non synchronisé)");
+    }
+
     // ── I2C init for sensors ─────────────────────────────────────────────
     initI2C();
 
     // ── Determine which tasks are due ────────────────────────────────────
     TaskFlags flags = scheduler::evaluate();
 
-    Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d Photo=%d\n",
+    Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d Photo=%d\r\n",
                   flags.readDs18b20, flags.readSht3x, flags.readIna219, flags.takePhoto);
 
     // ── Run sensor tasks (publishes via BTHome BLE) ───────────────────────

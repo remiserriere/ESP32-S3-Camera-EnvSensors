@@ -256,3 +256,39 @@ bool mqtt_config::syncFromBroker() {
 
     return updated;
 }
+
+bool mqtt_config::publishAlive() {
+    if (!g_deviceConfig.mqttEnabled) return false;
+    if (g_deviceConfig.mqttBroker[0] == '\0') return false;
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    s_mqtt.setServer(g_deviceConfig.mqttBroker, g_deviceConfig.mqttPort);
+    s_mqtt.setBufferSize(256);
+
+    bool connected;
+    if (g_deviceConfig.mqttUser[0] != '\0') {
+        connected = s_mqtt.connect(g_deviceConfig.mqttClientId,
+                                   g_deviceConfig.mqttUser,
+                                   g_deviceConfig.mqttPassword);
+    } else {
+        connected = s_mqtt.connect(g_deviceConfig.mqttClientId);
+    }
+
+    if (!connected) {
+        Serial.printf("[MQTT-CFG] publishAlive: connexion échouée (state=%d)\n", s_mqtt.state());
+        return false;
+    }
+
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%s/alive", g_deviceConfig.mqttClientId);
+
+    char payload[128];
+    snprintf(payload, sizeof(payload),
+             "{\"fw\":\"%s\",\"uptime_s\":%lu}",
+             FIRMWARE_VERSION, millis() / 1000UL);
+
+    bool ok = s_mqtt.publish(topic, payload, false);
+    s_mqtt.disconnect();
+    Serial.printf("[MQTT-CFG] publishAlive → %s : %s\n", topic, ok ? "OK" : "échec publish");
+    return ok;
+}

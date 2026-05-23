@@ -1,5 +1,6 @@
 #include "time_manager.h"
 #include "config.h"
+#include "device_config.h"
 #include "persistence.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -29,15 +30,26 @@ bool time_manager::init() {
     _trusted = rtc.timeTrusted && (rtc.lastEpochS > 0);
 
     if (_trusted && rtc.lastEpochS > 0) {
-        // Estimate current time: RTC epoch + time elapsed since we set it
+        setenv("TZ", g_deviceConfig.ntpTimezone, 1);
+        tzset();
+
+        // If the system clock was already set correctly (e.g. by NTP during the
+        // serial CLI session on this same boot), trust it and do not overwrite it
+        // with a potentially stale estimate from RTC + millis().
+        time_t sysTime = time(nullptr);
+        if (sysTime > 1000000000L) {
+            // Clock is already valid – nothing to do.
+            return _trusted;
+        }
+
+        // Otherwise estimate current time: projected RTC epoch + boot millis.
+        // After a normal deep-sleep wake lastEpochS holds the projected wake time,
+        // so this produces an accurate estimate even though millis() reset to ~0.
         uint32_t elapsedMs = millis() - rtc.lastEpochSetMs;
         int64_t  estimated = rtc.lastEpochS + (int64_t)(elapsedMs / 1000);
 
-        // Push to system clock so time() / localtime() work
-        struct timeval tv = { .tv_sec  = (time_t)estimated, .tv_usec = 0 };
+        struct timeval tv = { .tv_sec = (time_t)estimated, .tv_usec = 0 };
         settimeofday(&tv, nullptr);
-        setenv("TZ", NTP_TIMEZONE, 1);
-        tzset();
     }
 
     return _trusted;
@@ -46,10 +58,10 @@ bool time_manager::init() {
 bool time_manager::syncNtp() {
     Serial.println("[NTP] Starting synchronisation...");
 
-    setenv("TZ", NTP_TIMEZONE, 1);
+    setenv("TZ", g_deviceConfig.ntpTimezone, 1);
     tzset();
 
-    configTzTime(NTP_TIMEZONE, NTP_SERVER_1, NTP_SERVER_2);
+    configTzTime(g_deviceConfig.ntpTimezone, g_deviceConfig.ntpServer1, g_deviceConfig.ntpServer2);
 
     // Wait for sync
     uint32_t start = millis();
@@ -79,7 +91,7 @@ bool time_manager::syncNtp() {
 
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
-    Serial.printf("[NTP] Synced: %s\n", buf);
+    Serial.printf("[NTP] Synced: %s\r\n", buf);
     return true;
 }
 

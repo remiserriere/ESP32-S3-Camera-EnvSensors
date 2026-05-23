@@ -126,7 +126,7 @@ Boot / Wake
 
 | Signal | Default GPIO | Note |
 |---|---|---|
-| DS18B20 data | 14 | 4.7 kΩ pull-up to 3.3 V required |
+| DS18B20 data | 41 | 4.7 kΩ pull-up to 3.3 V required; JTAG disabled at boot via gpio_reset_pin() |
 | I²C SDA (sensors) | 3 | shared by SHT3x, INA219 |
 | I²C SCL (sensors) | 2 | shared by SHT3x, INA219 |
 | Camera SCCB SDA | 4 | independent bus |
@@ -136,7 +136,7 @@ Boot / Wake
 
 ### Wiring summary
 
-- **DS18B20**: Data → GPIO 14 + 4.7 kΩ to 3.3 V. Multiple sensors can share the same wire.
+- **DS18B20**: Data → GPIO 41 + 4.7 kΩ to 3.3 V. Multiple sensors can share the same wire. GPIO 39–42 are freed from JTAG at boot (gpio_reset_pin()) and usable as normal IO.
 - **SHT3x**: SDA/SCL on GPIO 3/2. Default I²C address 0x44 (ADDR pin low); change to 0x45 if needed.
 - **INA219**: SDA/SCL on GPIO 3/2. Default address 0x40; up to four units with address pins.
 - **Camera**: Uses its own SCCB bus (GPIO 4/5) — does not conflict with the sensor I²C bus.
@@ -256,6 +256,10 @@ The menu appears:
 
 **[6] BLE device name** — the name shown in Home Assistant.
 
+**[7] Boot window** — duration (seconds) of the serial CLI + web config server at each boot/wake.
+
+**[8] NTP & Timezone** — NTP server 1, NTP server 2, POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).
+
 #### Menu actions
 
 | Key | Action |
@@ -308,6 +312,10 @@ pio run -t erase        # erases full flash including NVS
 | `mqtt_pass` | string | MQTT password |
 | `mqtt_id` | string | MQTT client ID |
 | `dev_name` | string | BLE device name |
+| `boot_win` | uint8 | Boot window (s) |
+| `ntp_srv1` | string | NTP server 1 |
+| `ntp_srv2` | string | NTP server 2 |
+| `ntp_tz` | string | POSIX timezone string |
 
 Missing keys fall back to `config.h` defaults — adding new keys in a future firmware update is always safe.
 
@@ -490,22 +498,101 @@ The firmware uses [BTHome v2](https://bthome.io/) — a standard BLE advertiseme
 
 **No MQTT, no ESPHome, no custom integration required.**
 
-Home Assistant with Bluetooth discovers the device automatically and creates entities:
+Home Assistant with Bluetooth discovers the device automatically and creates entities.
 
-| BTHome object ID | Measurement | Source |
+### BTHome payload structure
+
+The BLE advertisement carries typed measurement objects in ascending object-ID order.
+Each object type corresponds to one entity in Home Assistant:
+
+| BTHome object ID | HA entity name | Unit | Source |
+|---|---|---|---|
+| `0x02` (×N) | Temperature *(then Temperature 2, 3…)* | °C | one entry **per DS18B20**, in stored ROM order; **SHT3x temperature appended last** |
+| `0x03` | Humidity | % | SHT3x |
+| `0x0B` | Power | W | INA219 |
+| `0x0C` | Voltage | V | INA219 bus voltage |
+| `0x43` | Current | A | INA219 |
+
+> **Note**: BTHome v2 does not carry sensor names in the packet. HA auto-numbers duplicate types
+> (`Temperature`, `Temperature 2`, …). The firmware guarantees a **stable emission order** so the
+> mapping never changes after the first discovery (see below).
+
+### Multiple DS18B20 sensors — stable ordering
+
+The order in which DS18B20 temperatures appear in the BTHome packet is determined by their
+8-byte **1-Wire ROM address** and is locked in NVS the first time you run the discovery command:
+
+```
+Boot serial CLI → [D] Diagnostics → [I] Découverte DS18B20
+```
+
+- On first run (empty NVS) the sensors are enumerated in **ascending ROM address order** — this is
+  the order imposed by the 1-Wire search algorithm.
+- The ROM addresses are then **saved to NVS** (`ds_n`, `ds_0` … `ds_N`) so the order persists
+  across reboots, deep sleeps, and even bus re-enumeration if you add a new sensor.
+- If a new sensor is detected (count mismatch), the firmware falls back to live discovery order
+  and prints a warning — run `[I]` again to lock the new order.
+
+**Result for N DS18B20 + SHT3x enabled:**
+
+| BTHome slot | HA entity | ROM address (example) |
 |---|---|---|
-| `0x02` — Temperature | °C | DS18B20 (primary) or SHT3x (fallback) |
-| `0x03` — Humidity | % | SHT3x |
-| `0x0C` — Voltage | V | INA219 bus voltage |
-| `0x43` — Current | A | INA219 |
-| `0x0D` — Power | W | INA219 |
+| Temperature | DS18B20 #1 | `28:FF:12:34:56:78:90:AB` |
+| Temperature 2 | DS18B20 #2 | `28:FF:AA:BB:CC:DD:EE:FF` |
+| … | … | … |
+| Temperature N+1 | SHT3x | — |
+| Humidity | SHT3x | — |
+
+### Renaming entities in Home Assistant
+
+BTHome does not transmit sensor names. The recommended approach is to **rename the entities once
+in the HA UI** — the names survive firmware updates because they are tied to the BTHome device
+MAC address, not to entity IDs that could change.
+
+1. **Settings → Devices & Services → [your device]**
+2. Click any entity (e.g. "Temperature 2") → ✏️ pencil icon
+3. Set a friendly name (e.g. "SHT3x Temperature") → **Update**
+
+Suggested naming when SHT3x and one DS18B20 are both enabled:
+
+| HA entity (auto) | Suggested rename | Rationale |
+|---|---|---|
+| Temperature | DS18B20 Temperature | always slot 0 |
+| Temperature 2 | SHT3x Temperature | always last temperature slot |
+| Humidity | SHT3x Humidity | only humidity source |
+| Voltage | INA219 Voltage | only voltage source |
+| Current | INA219 Current | only current source |
+| Power | INA219 Power | only power source |
 
 ### Setup in Home Assistant
 
 1. Go to **Settings → Devices & Services → Add Integration → Bluetooth**.
 2. Make sure a Bluetooth adapter is available (built-in, USB dongle, or ESPHome BLE proxy).
-3. The device appears as `ESP32-S3-Env` (or whatever `deviceName` is set to).
+3. The device appears as `ESP32-S3-Env` (or whatever `deviceName` is set to in `[6] Nom BLE`).
 4. Accept — all sensor entities are created automatically.
+
+### BLE payload size limit
+
+Each BLE advertisement packet is limited to **31 bytes**.
+The main packet contains flags (3 B) + service data header (4 B) + one byte per object ID + values.
+Current usage with all sensors enabled (1 DS18B20 + SHT3x + INA219):
+
+| Object | Bytes |
+|---|---|
+| Device info byte | 1 |
+| Temperature ×1 (DS18B20) | 3 |
+| Temperature ×1 (SHT3x) | 3 |
+| Humidity | 3 |
+| Power | 4 |
+| Voltage | 3 |
+| Current | 3 |
+| **Subtotal service data** | **20** |
+| Flags AD element | 3 |
+| Service UUID + length | 4 |
+| **Total** | **27 / 31 bytes** |
+
+With 4 bytes remaining, up to **1 additional DS18B20** (3 B) fits within the limit.
+The device name is moved to the scan-response packet to keep the main packet within budget.
 
 ### BLE proxy (optional, recommended)
 
@@ -522,7 +609,8 @@ If the ESP32 is not in direct Bluetooth range of the HA host, add a cheap ESP32 
 | Before photo task | If last NTP sync > 6 h ago, re-sync while Wi-Fi is already up |
 | Time not trusted | Photo task is skipped — avoids spurious photos |
 
-**Timezone**: set `NTP_TIMEZONE` in `config.h` to your POSIX TZ string.
+**Timezone & NTP servers**: now runtime-configurable — no recompile needed.
+Change via serial CLI `[8]`, the web UI (NTP & Fuseau horaire section), or keep `config.h` defaults (`NTP_SERVER_1`, `NTP_SERVER_2`, `NTP_TIMEZONE`).
 Examples: `"CET-1CEST,M3.5.0,M10.5.0/3"` (Paris), `"UTC0"`, `"EST5EDT,M3.2.0,M11.1.0"` (New York).
 
 ---
@@ -693,10 +781,10 @@ Password: `OTA_DEVICE_PASSWORD` from `config.h` (default: `esp32ota`).
 | 1 | **Camera GPIO mapping** not validated against Freenove schematic — wrong pins cause `esp_camera_init` error `0x105` | ⚠️ TODO |
 | 2 | **Sensor I²C pins** (GPIO 2/3) not verified against Freenove header labels | ⚠️ TODO |
 | 3 | **HTTPS upload** — `HTTPClient` does not support TLS; use plain `http://` for now | 🔜 Enhancement |
-| 4 | **HTTPS OTA from GitHub** — same TLS limitation; use self-hosted HTTP manifest | 🔜 Enhancement |
+| 4 | ~~**HTTPS OTA** — same TLS limitation; use self-hosted HTTP manifest~~ — `WiFiClientSecure` now used automatically when URL starts with `https://` | ✅ Done |
 | 5 | **MQTT over TLS** — `PubSubClient` supports `WiFiClientSecure`; not wired yet | 🔜 Enhancement |
 | 6 | **Photo retry back-off** — `photoRetryCount` tracked but no exponential delay implemented | 🔜 Enhancement |
-| 7 | **Multi-DS18B20 BTHome** — only the first sensor's temperature is advertised | 🔜 Enhancement |
+| 7 | ~~**Multi-DS18B20 BTHome** — only the first sensor's temperature is advertised~~ — all sensors emitted in stable NVS address order | ✅ Done |
 | 8 | **GPS coordinates** — hardcoded to 0 in upload metadata | 🔜 Enhancement |
 | 9 | **OTA partition size** — `default.csv` limits the app to ~1.3 MB; switch to `default_8MB.csv` for 8 MB flash boards if firmware grows | ℹ️ Note |
 | 10 | **Serial CLI password** is not echoed but transmitted in plain text over USB | ℹ️ Note |
@@ -810,7 +898,7 @@ Boot / Wake
 
 | Signal | Default GPIO | Note |
 |---|---|---|
-| DS18B20 data | 14 | 4.7 kΩ pull-up to 3.3 V required |
+| DS18B20 data | 41 | 4.7 kΩ pull-up to 3.3 V required; JTAG disabled at boot via gpio_reset_pin() |
 | I²C SDA (sensors) | 3 | shared by SHT3x, INA219 |
 | I²C SCL (sensors) | 2 | shared by SHT3x, INA219 |
 | Camera SCCB SDA | 4 | independent bus |
@@ -820,7 +908,7 @@ Boot / Wake
 
 ### Wiring summary
 
-- **DS18B20**: Data → GPIO 14 + 4.7 kΩ to 3.3 V. Multiple sensors can share the same wire.
+- **DS18B20**: Data → GPIO 41 + 4.7 kΩ to 3.3 V. Multiple sensors can share the same wire. GPIO 39–42 are freed from JTAG at boot (gpio_reset_pin()) and usable as normal IO.
 - **SHT3x**: SDA/SCL on GPIO 3/2. Default I²C address 0x44 (ADDR pin low); change to 0x45 if needed.
 - **INA219**: SDA/SCL on GPIO 3/2. Default address 0x40; up to four units with address pins.
 - **Camera**: Uses its own SCCB bus (GPIO 4/5) — does not conflict with the sensor I²C bus.
@@ -964,11 +1052,25 @@ OTA activé      [y] : y
 URL manifest OTA [http://...] : http://192.168.1.100:8080/firmware/manifest.json
 ```
 
-**[5] BLE device name**
+**[5] MQTT** — enable/disable, broker hostname/IP, port, username, password (hidden), client ID.
+
+**[6] BLE device name**
 
 ```
 Nom BLE de l'appareil [ESP32-S3-Env] : Jardin-ESP32
 ```
+
+**[7] Boot window** — duration of the serial CLI + web config server at each boot (0–180 s).
+
+**[8] NTP & Timezone**
+
+```
+Serveur NTP 1       [172.22.7.1]                          : pool.ntp.org
+Serveur NTP 2       [time.google.com]                     : (Enter=keep)
+Fuseau horaire (TZ) [CET-1CEST,M3.5.0,M10.5.0/3]         : America/New_York
+```
+
+> POSIX TZ examples: `CET-1CEST,M3.5.0,M10.5.0/3` (Paris), `UTC0`, `EST5EDT,M3.2.0,M11.1.0` (New York).
 
 #### Menu actions
 
@@ -1025,6 +1127,10 @@ After erasing, the device will use `config.h` defaults on next boot.
 | `ota_en` | bool | OTA enabled |
 | `ota_url` | string | OTA manifest URL |
 | `dev_name` | string | BLE device name |
+| `boot_win` | uint8 | Boot window (s) |
+| `ntp_srv1` | string | NTP server 1 |
+| `ntp_srv2` | string | NTP server 2 |
+| `ntp_tz` | string | POSIX timezone string |
 
 Missing keys are silently ignored — the default from `resetToDefaults()` (itself sourced from `config.h`) is used instead. This means adding a new config field in a firmware update is safe: the old NVS data is still valid for all existing keys.
 
@@ -1098,7 +1204,8 @@ The firmware avoids NTP on every wake — it only syncs when needed:
 
 After a successful sync, the epoch is saved to both RTC memory and NVS. On a power-cycle (RTC lost), the NVS epoch is used as starting point — typically off by only a few seconds/minutes depending on how long the device was unpowered.
 
-**Timezone**: set `NTP_TIMEZONE` in `config.h` to your POSIX TZ string.
+**Timezone & NTP servers**: now runtime-configurable — no recompile needed.
+Change via serial CLI `[8]`, the web UI (NTP & Fuseau horaire section), or keep `config.h` defaults (`NTP_SERVER_1`, `NTP_SERVER_2`, `NTP_TIMEZONE`).
 Examples: `"CET-1CEST,M3.5.0,M10.5.0/3"` (Paris), `"UTC0"`, `"EST5EDT,M3.2.0,M11.1.0"` (New York).
 
 ---

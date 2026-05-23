@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
@@ -15,6 +16,11 @@
 
 static constexpr const char* NVS_NS_OTA   = "ota";
 static constexpr const char* NVS_KEY_MAINT = "maint";
+
+// Returns true if the URL uses the HTTPS scheme.
+static bool urlIsHttps(const String& url) {
+    return url.startsWith("https://") || url.startsWith("HTTPS://");
+}
 
 // Very small hand-rolled JSON field extractor for the known manifest format.
 // Extracts the string value of "key" from a flat JSON object.
@@ -67,8 +73,20 @@ bool ota::checkAndApply() {
     Serial.printf("[OTA] Current version: %s\n", FIRMWARE_VERSION);
     Serial.printf("[OTA] Checking manifest: %s\n", g_deviceConfig.otaManifestUrl);
 
+    // Use WiFiClientSecure for https:// URLs (accepts self-signed / local CA).
+    // setInsecure() skips cert validation — acceptable for a local server;
+    // swap for setCACert(rootCa) if you pin a certificate.
+    WiFiClient         plainClient;
+    WiFiClientSecure   secureClient;
+    secureClient.setInsecure();
+
+    String manifestUrl = g_deviceConfig.otaManifestUrl;
     HTTPClient http;
-    http.begin(g_deviceConfig.otaManifestUrl);
+    if (urlIsHttps(manifestUrl)) {
+        http.begin(secureClient, manifestUrl);
+    } else {
+        http.begin(plainClient, manifestUrl);
+    }
     http.setTimeout(10000);
     int code = http.GET();
 
@@ -101,8 +119,17 @@ bool ota::checkAndApply() {
     if (!notes.isEmpty()) Serial.printf("[OTA] Notes: %s\n", notes.c_str());
     Serial.printf("[OTA] Downloading: %s\n", binaryUrl.c_str());
 
+    // Re-use the same secure/plain choice for the binary download.
+    WiFiClient         dlPlain;
+    WiFiClientSecure   dlSecure;
+    dlSecure.setInsecure();
+
     HTTPClient dlHttp;
-    dlHttp.begin(binaryUrl);
+    if (urlIsHttps(binaryUrl)) {
+        dlHttp.begin(dlSecure, binaryUrl);
+    } else {
+        dlHttp.begin(dlPlain, binaryUrl);
+    }
     dlHttp.setTimeout(OTA_DOWNLOAD_TIMEOUT_MS);
     int dlCode = dlHttp.GET();
 
@@ -163,9 +190,10 @@ bool ota::isMaintenanceModeRequested() {
         }
     }
 
-    // NVS flag
+    // NVS flag – open read-write so the namespace is created on first boot
+    // instead of generating a spurious NOT_FOUND log error every cold start.
     Preferences p;
-    p.begin(NVS_NS_OTA, true);  // read-only
+    p.begin(NVS_NS_OTA, false);
     bool flag = p.getBool(NVS_KEY_MAINT, false);
     p.end();
     if (flag) Serial.println("[OTA] Maintenance mode triggered by NVS flag");

@@ -12,10 +12,10 @@ static constexpr const char* CFG_NS = "dev_cfg";
 void device_config::resetToDefaults() {
     g_deviceConfig = {};   // zero-init all fields first
 
-    g_deviceConfig.ds18b20Enabled     = true;
+    g_deviceConfig.ds18b20Enabled     = DS18B20_ENABLED;
     g_deviceConfig.ds18b20IntervalMin = DS18B20_INTERVAL_MIN;
 
-    g_deviceConfig.sht3xEnabled       = true;
+    g_deviceConfig.sht3xEnabled       = SHT3X_ENABLED;
     g_deviceConfig.sht3xIntervalMin   = SHT3X_INTERVAL_MIN;
 
     g_deviceConfig.ina219Enabled      = INA219_ENABLED;
@@ -40,6 +40,12 @@ void device_config::resetToDefaults() {
     strncpy(g_deviceConfig.mqttClientId, BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.mqttClientId) - 1);
 
     strncpy(g_deviceConfig.deviceName,     BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.deviceName)     - 1);
+
+    g_deviceConfig.bootWindowSec      = BOOT_WINDOW_SEC;
+
+    strncpy(g_deviceConfig.ntpServer1,  NTP_SERVER_1, sizeof(g_deviceConfig.ntpServer1)  - 1);
+    strncpy(g_deviceConfig.ntpServer2,  NTP_SERVER_2, sizeof(g_deviceConfig.ntpServer2)  - 1);
+    strncpy(g_deviceConfig.ntpTimezone, NTP_TIMEZONE, sizeof(g_deviceConfig.ntpTimezone) - 1);
 }
 
 void device_config::load() {
@@ -88,6 +94,12 @@ void device_config::load() {
 
     readStr("dev_name",   g_deviceConfig.deviceName,      sizeof(g_deviceConfig.deviceName));
 
+    g_deviceConfig.bootWindowSec = p.getUChar("boot_win", g_deviceConfig.bootWindowSec);
+
+    readStr("ntp_srv1", g_deviceConfig.ntpServer1,  sizeof(g_deviceConfig.ntpServer1));
+    readStr("ntp_srv2", g_deviceConfig.ntpServer2,  sizeof(g_deviceConfig.ntpServer2));
+    readStr("ntp_tz",   g_deviceConfig.ntpTimezone, sizeof(g_deviceConfig.ntpTimezone));
+
     p.end();
     Serial.println("[Config] Loaded from NVS");
 }
@@ -125,33 +137,47 @@ void device_config::save() {
 
     p.putString("dev_name",g_deviceConfig.deviceName);
 
+    p.putUChar("boot_win", g_deviceConfig.bootWindowSec);
+
+    p.putString("ntp_srv1", g_deviceConfig.ntpServer1);
+    p.putString("ntp_srv2", g_deviceConfig.ntpServer2);
+    p.putString("ntp_tz",   g_deviceConfig.ntpTimezone);
+
     p.end();
     Serial.println("[Config] Saved to NVS");
 }
 
 void device_config::print() {
-    Serial.println(F("\n┌─── Device Configuration ────────────────────────────────┐"));
-    Serial.printf ("│  DS18B20  : %-8s  interval: %3d min                  │\n",
+    Serial.println(F("\r\n┌─── Device Configuration ────────────────────────────────┐"));
+    Serial.printf ("│  DS18B20  : %-8s  interval: %3d min                  │\r\n",
                    g_deviceConfig.ds18b20Enabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.ds18b20IntervalMin);
-    Serial.printf ("│  SHT3x    : %-8s  interval: %3d min                  │\n",
+    Serial.printf ("│  SHT3x    : %-8s  interval: %3d min                  │\r\n",
                    g_deviceConfig.sht3xEnabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.sht3xIntervalMin);
-    Serial.printf ("│  INA219   : %-8s  interval: %3d min                  │\n",
+    Serial.printf ("│  INA219   : %-8s  interval: %3d min                  │\r\n",
                    g_deviceConfig.ina219Enabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.ina219IntervalMin);
-    Serial.printf ("│  Photo    : %02d:%02d  window: +%d min                      │\n",
+    Serial.printf ("│  Photo    : %02d:%02d  window: +%d min                      │\r\n",
                    g_deviceConfig.photoHour, g_deviceConfig.photoMinute,
                    g_deviceConfig.photoWindowMin);
-    Serial.printf ("│  WiFi     : %-47s│\n", g_deviceConfig.wifiSsid);
-    Serial.printf ("│  Endpoint : %-47s│\n", g_deviceConfig.uploadEndpoint);
-    Serial.printf ("│  OTA      : %-8s  %-38s│\n",
+    Serial.printf ("│  WiFi     : %-47s│\r\n", g_deviceConfig.wifiSsid);
+    Serial.printf ("│  Endpoint : %-47s│\r\n", g_deviceConfig.uploadEndpoint);
+    Serial.printf ("│  OTA      : %-8s  %-38s│\r\n",
                    g_deviceConfig.otaEnabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.otaManifestUrl);
-    Serial.printf ("│  MQTT     : %-8s  %s:%u                            \n",
+    // MQTT: broker+port length is variable, truncate for display
+    char mqttHost[32];
+    snprintf(mqttHost, sizeof(mqttHost), "%.24s:%u",
+             g_deviceConfig.mqttBroker, g_deviceConfig.mqttPort);
+    Serial.printf ("│  MQTT     : %-8s  %-38s│\r\n",
                    g_deviceConfig.mqttEnabled ? "ENABLED" : "DISABLED",
-                   g_deviceConfig.mqttBroker,
-                   g_deviceConfig.mqttPort);
-    Serial.printf ("│  BLE name : %-47s│\n", g_deviceConfig.deviceName);
+                   mqttHost);
+    Serial.printf ("│  BLE name : %-47s│\r\n", g_deviceConfig.deviceName);
+    Serial.printf ("│  Boot win : %-3u s  (0=web off, min 5 s CLI)             │\r\n",
+                   g_deviceConfig.bootWindowSec);
+    Serial.printf ("│  NTP 1    : %-47s│\r\n", g_deviceConfig.ntpServer1);
+    Serial.printf ("│  NTP 2    : %-47s│\r\n", g_deviceConfig.ntpServer2);
+    Serial.printf ("│  TZ       : %-47s│\r\n", g_deviceConfig.ntpTimezone);
     Serial.println(F("└─────────────────────────────────────────────────────────┘"));
 }

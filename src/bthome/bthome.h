@@ -5,9 +5,10 @@
 // Sensor payload for BTHome advertisement.
 // All fields are optional – set valid=true for fields you want to include.
 struct BtHomePayload {
-    // Temperature (BTHome Object ID 0x02, int16, 0.01°C)
-    float   temperature;         // °C
-    bool    hasTemperature;
+    // Temperatures (BTHome Object ID 0x02, int16, 0.01°C).
+    // Each entry creates a separate Temperature entity in Home Assistant.
+    // Populate in order: DS18B20 sensors (by stored ROM index), then SHT3x.
+    std::vector<float> temperatures;
 
     // Humidity (BTHome Object ID 0x03, uint16, 0.01%)
     float   humidity;            // %
@@ -25,7 +26,7 @@ struct BtHomePayload {
     float   currentA;            // A
     bool    hasCurrent;
 
-    // Power (BTHome Object ID 0x0D, uint24, 0.01W)
+    // Power (BTHome Object ID 0x0B, uint24, 0.01W)
     float   powerW;              // W
     bool    hasPower;
 };

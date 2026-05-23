@@ -517,6 +517,27 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
         return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
 
+    @app.post("/api/device-config/push-direct")
+    def push_device_config_direct() -> Any:
+        """Publish the payload from the request body to MQTT without saving to disk."""
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+        try:
+            device_cfg = DeviceConfigPayload.from_dict(body)
+        except Exception as exc:
+            app.logger.debug("Invalid device config payload: %s", exc)
+            return jsonify({"error": "Invalid payload — check field types and names"}), 400
+
+        try:
+            publish_device_config(service_config, device_cfg)
+        except Exception as exc:
+            app.logger.warning("MQTT push-direct failed: %s", exc)
+            return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
+
+        return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
+
     # ------------------------------------------------------------------
     # OTA management API
     # ------------------------------------------------------------------

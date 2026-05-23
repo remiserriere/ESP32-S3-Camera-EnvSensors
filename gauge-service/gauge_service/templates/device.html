@@ -106,7 +106,7 @@
     .btn-sec     { background: #374151; color: #f1f5f9; border: 1px solid #4b5563; }
     .btn-warn    { background: #92400e; color: #fef3c7; }
     .btn-danger  { background: #7f1d1d; color: #fecaca; }
-    #save-status, #pub-status, #fetch-status, #upload-status {
+    #save-status, #pub-status, #fetch-status, #upload-status, #push-direct-status {
       font-size: .88rem; margin-left: .25rem;
     }
     .ok   { color: #34d399; }
@@ -145,10 +145,12 @@
 
   <div class="banner banner-info">
     💡 Parameters are stored in <code>{{ config.data_dir }}/device_config.json</code>.
-    Click <strong>Save</strong> to persist them, or <strong>Save &amp; Push to device</strong>
-    to also publish them to MQTT topic
-    <code id="mqtt-topic-preview">{{ device_cfg.mqtt_id }}/config/set</code>
+    Click <strong>Save</strong> to persist them, <strong>Save &amp; Push to device</strong>
+    to persist and publish to MQTT, or <strong>Push to device (MQTT, no save)</strong>
+    to publish the current form values directly via MQTT without saving to disk.
+    Topic: <code id="mqtt-topic-preview">{{ device_cfg.mqtt_id }}/config/set</code>
     with retain=true — the device will pick them up on its next Wi-Fi session.
+    Use <strong>View config</strong> to inspect the JSON that would be sent.
   </div>
 
   {% if not config.mqtt_enabled %}
@@ -504,8 +506,11 @@
 <div class="action-bar">
   <button class="btn btn-success" onclick="saveAndPush()">💾 Save &amp; Push to device</button>
   <button class="btn btn-primary" onclick="saveOnly()">💾 Save only</button>
+  <button class="btn btn-warn" onclick="pushDirect()">📡 Push to device (MQTT, no save)</button>
+  <button class="btn btn-sec" onclick="viewConfigJson()">📄 View config</button>
   <span id="save-status"></span>
   <span id="pub-status"></span>
+  <span id="push-direct-status"></span>
   <span style="flex:1"></span>
   <a href="/device" class="btn btn-sec">↺ Reload</a>
 </div>
@@ -578,6 +583,24 @@ async function saveAndPush() {
     st.textContent = '✗ ' + (j.error || 'Error'); st.className = 'err';
   }
   await saveOtaConfig();
+}
+
+async function pushDirect() {
+  const st = document.getElementById('push-direct-status');
+  st.textContent = '…'; st.className = 'warn';
+  const body = buildPayload();
+  const r = await fetch('/api/device-config/push-direct', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (j.ok) { st.textContent = '📡 Published to ' + j.topic; st.className = 'ok'; }
+  else       { st.textContent = '✗ ' + (j.error || 'Error'); st.className = 'err'; }
+}
+
+function viewConfigJson() {
+  const payload = buildPayload();
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
 }
 
 async function saveOtaConfig() {

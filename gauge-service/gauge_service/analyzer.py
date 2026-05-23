@@ -5,13 +5,14 @@ Algorithm overview
 1. Decode image and resize to calibration image dimensions.
 2. Drift compensation: template-match each reference patch, compute mean
    (dx, dy) translation offset and apply it to all calibration coordinates.
-3. Needle detection:
-   a. Primary  – HSV colour: find the dominant hue of needle-like pixels in
-      the gauge circle ROI (works for coloured needles regardless of
-      brightness; uses H channel which is brightness-independent).
-   b. Fallback – Radial sweep: scan angles within the calibrated scale range,
-      score each candidate angle by its contrast along the radius (dark line
-      standing out against a lighter dial face).
+3. Needle detection – three methods are run concurrently; the most confident
+   result wins:
+   a. dark_radial – scores each candidate angle by the mean *darkness*
+      (background brightness minus pixel brightness) in the mid-radial zone,
+      skipping the central hub and the outer rim.  Best for black/dark needles.
+   b. hsv_color   – finds the dominant direction of high-saturation pixels in
+      the gauge ROI.  Best for coloured needles (red, blue, …).
+   c. radial_sweep – fallback variance-based scan (hub-excluded).
 4. Interpolate needle angle against calibrated tick marks (linear between the
    two bracketing ticks; extrapolation clamped to the scale extremes).
 5. Optionally check the value against the previous reading (delta limit).
@@ -33,8 +34,8 @@ from .config import ServiceConfig
 _SEARCH_MARGIN = 60
 # Minimum template-match correlation to trust a drift estimate
 _MATCH_THRESHOLD = 0.35
-# Number of radial samples per candidate angle in radial sweep
-_RADIAL_SAMPLES = 40
+# Number of radial samples per candidate angle in each sweep method
+_RADIAL_SAMPLES = 50
 # Angular resolution for radial sweep (degrees)
 _SWEEP_STEP_DEG = 0.5
 # Needle colour: look for pixels whose saturation is high (coloured)
@@ -43,6 +44,12 @@ _MIN_SATURATION = 60   # HSV S channel, 0-255
 _MIN_VALUE_HSV = 40    # HSV V channel minimum to ignore near-black corners
 # Margin beyond the tick-angle range to sweep (degrees)
 _SWEEP_MARGIN_DEG = 10.0
+# Radial zone used by dark & sweep methods.
+# HUB_SKIP: skip the central hub (large black base). 0.25 = skip inner 25 %
+# of radius. Increase if the hub is very large.
+_HUB_SKIP_FRAC = 0.25
+# OUTER_SKIP: stop before the dial rim/tick marks (typically at 90-95 %).
+_OUTER_SKIP_FRAC = 0.88
 
 
 class GaugeReader:
@@ -265,7 +272,13 @@ class GaugeReader:
     def _detect_needle(
         self, image: np.ndarray, cal: GaugeCalibration
     ) -> tuple[float, float, str]:
-        """Return (needle_angle_deg, confidence_0_1, source_str)."""
+        """Return (needle_angle_deg, confidence_0_1, source_str).
+
+        All three detection methods are run; the one with the highest
+        confidence is returned.  This makes the code work correctly for
+        both dark/black needles (dark_radial wins) and coloured needles
+        (hsv_color wins) without any manual configuration.
+        """
         circle = cal.circle
         cx, cy, cr = circle.cx, circle.cy, circle.r
 
@@ -276,19 +289,25 @@ class GaugeReader:
         a_min = angles_vals[0][0] - _SWEEP_MARGIN_DEG
         a_max = angles_vals[-1][0] + _SWEEP_MARGIN_DEG
 
-        # ── a. HSV colour method ──────────────────────────────────────────
-        angle_hsv, conf_hsv = _detect_needle_hsv(image, cx, cy, cr, a_min, a_max)
-        if conf_hsv >= 0.35:
-            return angle_hsv, conf_hsv, "hsv_color"
+        # ── a. Dark-needle radial method (primary for black needles) ──────
+        angle_dark, conf_dark = _detect_needle_dark(image, cx, cy, cr, a_min, a_max)
 
-        # ── b. Radial sweep (contrast) fallback ───────────────────────────
+        # ── b. HSV colour method (primary for coloured needles) ───────────
+        angle_hsv, conf_hsv = _detect_needle_hsv(image, cx, cy, cr, a_min, a_max)
+
+        # ── c. Radial sweep (variance-based fallback) ─────────────────────
         angle_sweep, conf_sweep = _detect_needle_radial_sweep(
             image, cx, cy, cr, a_min, a_max
         )
-        source = "radial_sweep"
-        if conf_hsv > conf_sweep:
-            return angle_hsv, conf_hsv, "hsv_color_weak"
-        return angle_sweep, conf_sweep, source
+
+        # Pick the method with the highest confidence
+        candidates = [
+            (conf_dark,  angle_dark,  "dark_radial"),
+            (conf_hsv,   angle_hsv,   "hsv_color"),
+            (conf_sweep, angle_sweep, "radial_sweep"),
+        ]
+        best_conf, best_angle, best_source = max(candidates, key=lambda t: t[0])
+        return best_angle, best_conf, best_source
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +354,91 @@ def _shift_calibration(cal: GaugeCalibration, dx: float, dy: float) -> GaugeCali
         circle=new_circle,
         ticks=new_ticks,
     )
+
+
+def _detect_needle_dark(
+    image: np.ndarray,
+    cx: float, cy: float, cr: float,
+    a_min: float, a_max: float,
+) -> tuple[float, float]:
+    """Detect a DARK (e.g. black) needle on a lighter dial background.
+
+    Strategy
+    --------
+    For each candidate angle, sample *_RADIAL_SAMPLES* pixels along the
+    radius in the annular zone [HUB_SKIP, OUTER_SKIP].  The score is the
+    *mean darkness* of those pixels relative to the dial background, i.e.
+    how much darker the radial path is compared to the bright dial face.
+
+    Skipping the central hub is critical when the needle has a large black
+    base: without this exclusion every radial direction would score high
+    because the hub boundary crosses all angles.
+
+    CLAHE normalisation is applied first to reduce sensitivity to absolute
+    brightness (lighting variation between shots).
+
+    Returns (angle_deg, confidence_0_1).
+    """
+    h_img, w_img = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Local contrast normalisation (compensates scene brightness variation)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    icx = int(round(cx))
+    icy = int(round(cy))
+
+    # Dial background brightness: 75th percentile of the annular mid-zone
+    # (not the hub, not the outer ticks).  Needle pixels will be much darker.
+    bg_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    cv2.circle(bg_mask, (icx, icy), int(round(cr * _OUTER_SKIP_FRAC)), 255, -1)
+    cv2.circle(bg_mask, (icx, icy), int(round(cr * _HUB_SKIP_FRAC)), 0, -1)
+    bg_pixels = gray[bg_mask > 0]
+    # Use 75th percentile as "bright dial" reference; needle pixels should be well below
+    bg_bright = float(np.percentile(bg_pixels, 75)) if len(bg_pixels) > 0 else 200.0
+
+    # Radial samples: from just outside the hub to just inside the rim
+    r_fracs = np.linspace(_HUB_SKIP_FRAC + 0.02, _OUTER_SKIP_FRAC, _RADIAL_SAMPLES)
+
+    candidate_angles = np.arange(a_min, a_max + _SWEEP_STEP_DEG, _SWEEP_STEP_DEG)
+    scores = np.zeros(len(candidate_angles), dtype=np.float32)
+
+    for i, angle_deg in enumerate(candidate_angles):
+        rad = math.radians(angle_deg)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+
+        xs = np.clip(cx + r_fracs * cr * cos_a, 0, w_img - 1).astype(np.int32)
+        ys = np.clip(cy - r_fracs * cr * sin_a, 0, h_img - 1).astype(np.int32)
+        vals = gray[ys, xs].astype(np.float32)
+
+        # How much darker than the bright dial background?
+        # Only count negative deviations (pixels darker than background).
+        darkness = np.maximum(0.0, bg_bright - vals)
+        scores[i] = float(np.mean(darkness))
+
+    if len(scores) == 0:
+        return (a_min + a_max) / 2.0, 0.0
+
+    # Smooth across angles: suppresses single-pixel spikes from tick marks / numbers
+    kernel_size = max(3, int(len(scores) // 15) | 1)
+    smoothed = cv2.GaussianBlur(scores.reshape(1, -1), (1, kernel_size), 0).flatten()
+
+    best_idx = int(np.argmax(smoothed))
+    best_angle = float(candidate_angles[best_idx])
+
+    # Confidence: how much the needle direction stands out above the noise floor
+    peak = float(smoothed[best_idx])
+    baseline = float(np.percentile(smoothed, 25))  # lower quartile = "no needle" baseline
+    if peak < 1.0 or baseline < 0.5:
+        confidence = 0.0
+    else:
+        snr = peak / baseline
+        # snr=1 → 0 confidence; snr=4 → 1.0 confidence (capped at 0.92)
+        confidence = min(0.92, max(0.0, (snr - 1.0) / 3.0))
+
+    return best_angle, confidence
 
 
 def _detect_needle_hsv(
@@ -402,11 +506,11 @@ def _detect_needle_radial_sweep(
     cx: float, cy: float, cr: float,
     a_min: float, a_max: float,
 ) -> tuple[float, float]:
-    """Detect needle angle by radial contrast sweep.
+    """Detect needle angle by radial contrast sweep (variance-based fallback).
 
-    For each candidate angle, sample *_RADIAL_SAMPLES* pixels from the circle
-    centre outward and compute a contrast score (variance).  The angle with
-    the highest score is taken as the needle direction.
+    For each candidate angle, sample *_RADIAL_SAMPLES* pixels from the hub
+    boundary outward (hub excluded) and compute a contrast score (variance).
+    The angle with the highest score is taken as the needle direction.
     Brightness-normalised using CLAHE before sampling.
     Returns (angle_deg, confidence_0_1).
     """
@@ -420,8 +524,8 @@ def _detect_needle_radial_sweep(
     candidate_angles = np.arange(a_min, a_max + _SWEEP_STEP_DEG, _SWEEP_STEP_DEG)
     scores: list[float] = []
 
-    # Radii fractions: sample from 10% to 90% of radius (skip centre hub and rim)
-    r_fracs = np.linspace(0.10, 0.90, _RADIAL_SAMPLES)
+    # Skip the hub region (same bounds as dark method for consistency)
+    r_fracs = np.linspace(_HUB_SKIP_FRAC + 0.02, _OUTER_SKIP_FRAC, _RADIAL_SAMPLES)
 
     for angle_deg in candidate_angles:
         rad = math.radians(angle_deg)
@@ -432,7 +536,7 @@ def _detect_needle_radial_sweep(
         ys = np.clip(cy - r_fracs * cr * sin_a, 0, h_img - 1).astype(np.int32)
         vals = gray[ys, xs].astype(np.float32)
 
-        # Score = variance (a thin dark needle line creates high variance)
+        # Score = variance (any high-contrast line scores well)
         scores.append(float(np.var(vals)))
 
     if not scores:

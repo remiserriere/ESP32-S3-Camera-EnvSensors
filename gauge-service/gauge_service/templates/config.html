@@ -427,9 +427,23 @@ function collectFormData() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Preview config JSON in a new tab (without saving)
+// Includes env-locked fields prefixed with "_" so they appear as informational
 // ─────────────────────────────────────────────────────────────────────────────
 function previewConfig() {
-  const data = collectFormData();
+  const form = document.getElementById('cfg-form');
+  const data = {};
+  form.querySelectorAll('input, select').forEach(el => {
+    const name = el.name;
+    if (!name) return;
+    const key = el.disabled ? ('_' + name) : name;
+    if (el.type === 'checkbox') {
+      data[key] = el.checked;
+    } else if (el.type === 'number') {
+      data[key] = el.value === '' ? null : Number(el.value);
+    } else {
+      data[key] = el.value;
+    }
+  });
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], {type: 'application/json'});
   window.open(URL.createObjectURL(blob), '_blank');

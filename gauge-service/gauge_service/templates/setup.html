@@ -10,9 +10,11 @@
     header h1 { margin:0; font-size:1.2rem; }
     header a { color:#93c5fd; font-size:.9rem; }
     .layout { display:flex; height:calc(100vh - 54px); }
-    #canvas-col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0f172a; padding:.5rem; overflow:hidden; }
+    #canvas-col { flex:1; min-width:200px; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0f172a; padding:.5rem; overflow:hidden; }
     #main-canvas { cursor:crosshair; border:2px solid #334155; border-radius:4px; max-width:100%; max-height:100%; display:block; }
-    #side-panel { width:360px; background:#1e293b; border-left:1px solid #334155; display:flex; flex-direction:column; overflow:hidden; }
+    #resizer { width:6px; background:#334155; cursor:col-resize; flex-shrink:0; transition:background .15s; }
+    #resizer:hover, #resizer.dragging { background:#3b82f6; }
+    #side-panel { width:360px; min-width:220px; max-width:60vw; background:#1e293b; border-left:1px solid #334155; display:flex; flex-direction:column; overflow:hidden; }
     #steps-nav { display:flex; border-bottom:1px solid #334155; }
     .step-tab { flex:1; padding:.6rem .3rem; text-align:center; font-size:.78rem; cursor:pointer; border:none; background:transparent; color:#94a3b8; transition:background .15s; }
     .step-tab.active { background:#1d4ed8; color:#fff; font-weight:bold; }
@@ -65,6 +67,9 @@
     <p style="color:#64748b;">No image available yet. Send a photo from the device first, then return here.</p>
     {% endif %}
   </div>
+
+  <!-- Resizable divider -->
+  <div id="resizer"></div>
 
   <!-- Right: step panels -->
   <div id="side-panel">
@@ -173,8 +178,11 @@
         <p style="font-size:.83rem;color:#94a3b8;margin:.3rem 0 .2rem;">Docker Compose — <code>environment:</code> section:</p>
         <textarea class="mono-out" id="yaml-compose-out" readonly style="height:3.5rem;"></textarea>
 
-        <p style="font-size:.83rem;color:#94a3b8;margin:.8rem 0 .2rem;">Kubernetes (K8S/K3S) — ConfigMap:</p>
+        <p style="font-size:.83rem;color:#94a3b8;margin:.8rem 0 .4rem;"><strong>Kubernetes (K8S/K3S)</strong></p>
+        <p style="font-size:.8rem;color:#64748b;margin:.2rem 0 .2rem;">1. ConfigMap creation:</p>
         <textarea class="mono-out" id="yaml-k8s-out" readonly style="height:6rem;"></textarea>
+        <p style="font-size:.8rem;color:#64748b;margin:.5rem 0 .2rem;">2. Use in Deployment — add to <code>containers[].env</code>:</p>
+        <textarea class="mono-out" id="yaml-k8s-deploy-out" readonly style="height:6rem;"></textarea>
       </div>
     </div><!-- /panel-content -->
 
@@ -186,6 +194,41 @@
 </div><!-- /layout -->
 
 <script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Resizable panel divider
+// ─────────────────────────────────────────────────────────────────────────────
+(function() {
+  const resizer   = document.getElementById('resizer');
+  const sidePanel = document.getElementById('side-panel');
+  const layout    = document.querySelector('.layout');
+  let startX, startW;
+
+  resizer.addEventListener('mousedown', e => {
+    startX = e.clientX;
+    startW = sidePanel.offsetWidth;
+    resizer.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    function onMove(e) {
+      const dx  = startX - e.clientX;   // drag left = panel grows
+      const max = layout.offsetWidth - 200 - 6;
+      const w   = Math.min(max, Math.max(220, startW + dx));
+      sidePanel.style.width = w + 'px';
+      resizeCanvas();
+    }
+    function onUp() {
+      resizer.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -565,6 +608,16 @@ metadata:
 data:
   GAUGE_CONFIG: |
     ${json}`;
+
+  // Option B – K8S Deployment env reference
+  const elK8sDeploy = document.getElementById('yaml-k8s-deploy-out');
+  if (elK8sDeploy) elK8sDeploy.value =
+`        env:
+          - name: GAUGE_CONFIG
+            valueFrom:
+              configMapKeyRef:
+                name: gauge-config
+                key: GAUGE_CONFIG`;
 
   buildVolumeSnippet();
 }

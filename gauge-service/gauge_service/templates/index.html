@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ config.device_name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #111827; color: #f9fafb; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+    .card { background: #1f2937; border-radius: 12px; padding: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,.2); }
+    img { max-width: 100%; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: .45rem; border-bottom: 1px solid #374151; text-align: left; vertical-align: top; }
+    .muted { color: #9ca3af; font-size: .95rem; }
+    a { color: #93c5fd; }
+    ul { padding-left: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>{{ config.device_name }}</h1>
+  {% if latest %}
+  <div class="grid">
+    <section class="card">
+      <h2>Latest image</h2>
+      <p class="muted">{{ latest.received_at }}</p>
+      <a href="{{ latest.image_url }}"><img src="{{ latest.image_url }}" alt="latest gauge image"></a>
+    </section>
+    <section class="card">
+      <h2>Extracted data</h2>
+      <table>
+        <tr><th>Gauge level</th><td>{{ latest.analysis.percentage }} %</td></tr>
+        <tr><th>Confidence</th><td>{{ latest.analysis.confidence }} %</td></tr>
+        <tr><th>Estimated</th><td>{{ latest.analysis.estimated }}</td></tr>
+        <tr><th>Needle angle</th><td>{{ latest.analysis.needle_angle }}°</td></tr>
+        <tr><th>Scale range</th><td>{{ latest.analysis.low_angle }}° → {{ latest.analysis.high_angle }}°</td></tr>
+        <tr><th>Detection source</th><td>{{ latest.analysis.source }}</td></tr>
+        <tr><th>Metadata</th><td><pre>{{ latest.metadata | tojson(indent=2) }}</pre></td></tr>
+      </table>
+    </section>
+  </div>
+  {% else %}
+  <p>No image received yet.</p>
+  {% endif %}
+
+  <section class="card" style="margin-top: 1.5rem;">
+    <h2>Stored photos</h2>
+    <ul>
+      {% for record in records %}
+      <li>
+        <a href="{{ record.image_url }}">{{ record.image_name }}</a>
+        — {{ record.analysis.percentage }}% (confidence {{ record.analysis.confidence }}%, estimated={{ record.analysis.estimated }})
+      </li>
+      {% else %}
+      <li>No stored photo.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</body>
+</html>

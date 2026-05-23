@@ -180,7 +180,9 @@ class GaugeAnalyzer:
             cv2.putText(out, line, (bx + 8, by + line_h * (i + 1)),
                         cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.54, (225, 225, 225), 1, cv2.LINE_AA)
 
-        _, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        if not ok:
+            raise ValueError("Failed to encode debug image")
         return bytes(buf)
 
     def _apply_mirror_correction(self, image: np.ndarray) -> np.ndarray:

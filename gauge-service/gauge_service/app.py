@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -7,7 +8,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-_RECORD_ID_RE = re.compile(r'^\d{8}T\d{6}\d{6}Z$')
+_RECORD_ID_RE = re.compile(r'^\d{8}T\d{12}Z$')
 
 from .analyzer import GaugeAnalyzer
 from .config import ServiceConfig
@@ -22,6 +23,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
     analyzer = GaugeAnalyzer(service_config)
     mqtt = MqttPublisher(service_config)
     analyzer_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gauge-analyzer")
+    atexit.register(lambda: analyzer_pool.shutdown(wait=False, cancel_futures=True))
 
     app.config["SERVICE_CONFIG"] = service_config
     app.extensions["storage"] = storage

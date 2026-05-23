@@ -12,7 +12,7 @@ import numpy as np
 from gauge_service.app import create_app
 from gauge_service.config import ServiceConfig
 
-MAX_ASYNC_RESPONSE_TIME = 0.35
+MAX_ASYNC_RESPONSE_TIME_SECONDS = 0.35
 
 
 def _generate_image(level: float) -> bytes:
@@ -108,4 +108,4 @@ def test_upload_returns_immediately_when_not_in_debug_mode(tmp_path: Path) -> No
     assert response.status_code == 200
     body = response.get_json()
     assert body['status'] == 'accepted'
-    assert elapsed < MAX_ASYNC_RESPONSE_TIME
+    assert elapsed < MAX_ASYNC_RESPONSE_TIME_SECONDS

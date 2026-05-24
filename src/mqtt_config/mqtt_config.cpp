@@ -169,25 +169,55 @@ static bool jsonBool(const String& json, const char* key, bool defaultVal) {
 
 static void printPayload(const String& payload) {
     Serial.println("[MQTT-CFG] Payload received:");
-    int idx = 0, lineStart = 0;
-    while (idx < (int)payload.length()) {
-        if (payload[idx] == '\\' && idx + 1 < (int)payload.length()) {
-            if (payload[idx + 1] == 'n') {
-                Serial.println(payload.substring(lineStart, idx));
-                lineStart = idx + 2;
-                idx += 2;
-                continue;
-            } else if (payload[idx + 1] == 't') {
-                Serial.print("    "); // indent for tabs
-                idx += 2;
-                continue;
-            }
+
+    int indent = 0;
+
+    for (int i = 0; i < payload.length(); i++) {
+        char c = payload[i];
+
+        switch (c) {
+
+            case '{':
+            case '[':
+                Serial.printf("%c\r\n", c);
+                indent++;
+
+                for (int j = 0; j < indent; j++)
+                    Serial.print("    ");
+                break;
+
+            case '}':
+            case ']':
+                Serial.print("\r\n");
+
+                if (indent > 0)
+                    indent--;
+
+                for (int j = 0; j < indent; j++)
+                    Serial.print("    ");
+
+                Serial.print(c);
+                break;
+
+            case ',':
+                Serial.printf("%c\r\n", c);
+
+                for (int j = 0; j < indent; j++)
+                    Serial.print("    ");
+                break;
+
+            case '\n':
+            case '\r':
+                // Ignore existing formatting
+                break;
+
+            default:
+                Serial.print(c);
+                break;
         }
-        idx++;
     }
-    if (lineStart < (int)payload.length()) {
-        Serial.println(payload.substring(lineStart));
-    }
+
+    Serial.print("\r\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

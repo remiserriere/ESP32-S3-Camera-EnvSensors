@@ -26,7 +26,7 @@ Ina219Reading ina219::read() {
     r.powerMw        = _ina219.getPower_mW();
     r.valid = true;  // INA219 library doesn't return explicit validity flags; assume OK if begin() succeeded
 
-    Serial.printf("[INA219] V=%.3fV  I=%.2fmA  P=%.2fmW\n",
+    Serial.printf("[INA219] V=%.3fV  I=%.2fmA  P=%.2fmW\r\n",
                   r.busVoltageV, r.currentMa, r.powerMw);
     return r;
 }

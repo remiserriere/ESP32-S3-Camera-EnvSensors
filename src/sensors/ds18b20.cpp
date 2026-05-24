@@ -23,17 +23,17 @@ uint8_t ds18b20::begin() {
     if (!stored.empty() && (uint8_t)stored.size() == busCount) {
         _addresses = stored;
         _count     = busCount;
-        Serial.printf("[DS18B20] %u sensor(s), order from NVS\n", _count);
+        Serial.printf("[DS18B20] %u sensor(s), order from NVS\r\n", _count);
     } else {
         _count = busCount;
         _addresses.resize(_count);
         for (uint8_t i = 0; i < _count; i++)
             sensors.getAddress(_addresses[i].data(), i);
         if (!stored.empty())
-            Serial.printf("[DS18B20] Stored count (%zu) != bus (%u) – using discovery order\n",
+            Serial.printf("[DS18B20] Stored count (%zu) != bus (%u) – using discovery order\r\n",
                           stored.size(), busCount);
         else
-            Serial.printf("[DS18B20] Found %u sensor(s)\n", _count);
+            Serial.printf("[DS18B20] Found %u sensor(s)\r\n", _count);
     }
     return _count;
 }
@@ -47,7 +47,7 @@ uint8_t ds18b20::discoverAndStore() {
         sensors.getAddress(_addresses[i].data(), i);
     nvs::begin();  // idempotent
     nvs::saveDs18b20Addresses(_addresses);
-    Serial.printf("[DS18B20] Discovered and stored %u sensor(s)\n", _count);
+    Serial.printf("[DS18B20] Discovered and stored %u sensor(s)\r\n", _count);
     return _count;
 }
 
@@ -65,7 +65,7 @@ std::vector<Ds18b20Reading> ds18b20::readAll() {
         r.temperatureC = t;
         r.valid = (t != DEVICE_DISCONNECTED_C);
         results.push_back(r);
-        Serial.printf("[DS18B20] Sensor %zu [%02X..%02X]: %.2f C%s\n",
+        Serial.printf("[DS18B20] Sensor %zu [%02X..%02X]: %.2f C%s\r\n",
                       i, r.address[0], r.address[7], t, r.valid ? "" : " (INVALID)");
     }
     return results;

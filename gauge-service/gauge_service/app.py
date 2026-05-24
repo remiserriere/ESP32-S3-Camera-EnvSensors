@@ -327,7 +327,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             mqtt.publish_discovery()
         except Exception as exc:
             app.logger.warning("MQTT autodiscovery publish failed: %s", exc)
-            return jsonify({"ok": False, "error": str(exc)}), 502
+            return jsonify({"ok": False, "error": "MQTT autodiscovery failed — check broker settings"}), 502
         return jsonify({"ok": True})
 
     @app.post("/api/config")

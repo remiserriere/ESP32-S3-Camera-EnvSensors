@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <title>Settings — {{ config.device_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -102,6 +103,7 @@
       text-decoration: none; transition: opacity .15s;
     }
     .btn:hover { opacity: .85; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
     .btn-primary { background: #1d4ed8; color: #fff; }
     .btn-success { background: #065f46; color: #d1fae5; }
     .btn-sec     { background: #374151; color: #f1f5f9; border: 1px solid #4b5563; }
@@ -160,6 +162,14 @@
     locked by environment variable{{ 's' if locked | length > 1 else '' }}:</strong>
     {{ locked | sort | join(', ') }}.
     Remove the corresponding env var and reboot to manage them here.
+  </div>
+  {% endif %}
+
+  {% if not data_dir_writable %}
+  <div class="banner banner-warn">
+    🔒 <strong>Storage is read-only.</strong>
+    The data directory (<code>{{ config.data_dir }}</code>) is not writable.
+    Save actions are disabled — you can still preview the current configuration.
   </div>
   {% endif %}
 
@@ -437,8 +447,8 @@
 
 <!-- Sticky action bar -->
 <div class="action-bar">
-  <button class="btn btn-primary" onclick="saveConfig(false)">💾 Save</button>
-  <button class="btn btn-success" onclick="saveConfig(true)">💾 Save &amp; Reboot</button>
+  <button class="btn btn-primary" onclick="saveConfig(false)" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save</button>
+  <button class="btn btn-success" onclick="saveConfig(true)" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save &amp; Reboot</button>
   <button class="btn btn-sec" onclick="previewConfig()">↗ Preview JSON</button>
   <a href="/api/config/file" target="_blank" class="btn btn-sec">📄 Open service_config.json</a>
   <span id="save-status"></span>

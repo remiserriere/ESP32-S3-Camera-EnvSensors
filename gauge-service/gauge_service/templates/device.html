@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <title>Device — {{ config.device_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -101,6 +102,7 @@
       text-decoration: none; transition: opacity .15s;
     }
     .btn:hover { opacity: .85; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
     .btn-primary { background: #1d4ed8; color: #fff; }
     .btn-success { background: #065f46; color: #d1fae5; }
     .btn-sec     { background: #374151; color: #f1f5f9; border: 1px solid #4b5563; }
@@ -152,6 +154,14 @@
     with retain=true — the device will pick them up on its next Wi-Fi session.
     Use <strong>View config</strong> to inspect the JSON that would be sent.
   </div>
+
+  {% if not data_dir_writable %}
+  <div class="banner banner-warn">
+    🔒 <strong>Storage is read-only.</strong>
+    <code>{{ config.data_dir }}/device_config.json</code> is not writable — save actions are disabled.
+    You can still push the current form values directly to the device via MQTT (no save needed).
+  </div>
+  {% endif %}
 
   {% if not config.mqtt_enabled %}
   <div class="banner banner-warn">
@@ -419,7 +429,7 @@
         {% else %}
         <p class="warn">No firmware cached yet.</p>
         {% endif %}
-        <button class="btn btn-warn" onclick="fetchFirmware()" style="margin-top:.5rem">
+        <button class="btn btn-warn" onclick="fetchFirmware()" style="margin-top:.5rem" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>
           ⬇️ Download latest from GitHub
         </button>
         <span id="fetch-status"></span>
@@ -454,7 +464,7 @@
           </div>
         </div>
         <div style="margin-top:.75rem">
-          <button class="btn btn-warn" onclick="uploadFirmware()">📤 Upload firmware</button>
+          <button class="btn btn-warn" onclick="uploadFirmware()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>📤 Upload firmware</button>
           <span id="upload-status"></span>
         </div>
         <div class="field-row" style="margin-top:1rem">
@@ -492,7 +502,7 @@
         <label class="field-label" for="ota_url_push">Manifest URL for device</label>
         <input type="text" id="ota_url_push" value="{{ device_cfg.ota_url or (request.root_url + 'api/ota/manifest') }}">
       </div>
-      <button class="btn btn-primary" style="margin-top:.75rem" onclick="pushOtaToDevice()">
+      <button class="btn btn-primary" style="margin-top:.75rem" onclick="pushOtaToDevice()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>
         📡 Push OTA config to device
       </button>
       <span id="ota-push-status" style="font-size:.88rem;margin-left:.5rem"></span>
@@ -504,8 +514,8 @@
 
 <!-- ── Action bar ── -->
 <div class="action-bar">
-  <button class="btn btn-success" onclick="saveAndPush()">💾 Save &amp; Push to device</button>
-  <button class="btn btn-primary" onclick="saveOnly()">💾 Save only</button>
+  <button class="btn btn-success" onclick="saveAndPush()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save &amp; Push to device</button>
+  <button class="btn btn-primary" onclick="saveOnly()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save only</button>
   <button class="btn btn-warn" onclick="pushDirect()">📡 Push to device (MQTT, no save)</button>
   <button class="btn btn-sec" onclick="viewConfigJson()">📄 View config</button>
   <span id="save-status"></span>

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <title>Setup – {{ config.device_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -50,6 +51,7 @@
     .tick-row { display:flex; align-items:center; gap:.4rem; background:#0f172a; border-radius:4px; padding:.3rem .4rem; margin-bottom:.3rem; }
     .tick-row .coords { font-size:.76rem; color:#64748b; min-width:80px; }
     .tick-row input[type=number] { width:80px; }
+    .banner-warn { background:#451a03; border:1px solid #b45309; color:#fcd34d; border-radius:6px; padding:.55rem .85rem; font-size:.82rem; margin-bottom:.75rem; }
   </style>
 </head>
 <body>
@@ -81,6 +83,13 @@
     </div>
 
     <div id="panel-content">
+      {% if not data_dir_writable %}
+      <div class="banner-warn">
+        🔒 <strong>Storage is read-only.</strong>
+        <code>{{ config.data_dir }}/calibration.json</code> is not writable — "Save to server" is disabled.
+        Use the env-var or volume snippet below to apply your calibration.
+      </div>
+      {% endif %}
       <!-- Step 1 -->
       <div id="step-1">
         <h2>Step 1 – Reference patches</h2>
@@ -151,7 +160,7 @@
         <textarea class="mono-out" id="cal-json-out" readonly style="height:8rem;"></textarea>
         <div style="display:flex;gap:.5rem;align-items:center;margin-top:.4rem;flex-wrap:wrap;">
           <button class="btn btn-sec" onclick="previewCalibration()">↗ Preview in new tab</button>
-          <button class="btn btn-success" id="save-btn" onclick="saveCalibration()">💾 Save to server</button>
+          <button class="btn btn-success" id="save-btn" onclick="saveCalibration()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save to server</button>
           <a id="file-btn" class="btn btn-sec" href="/api/calibration/file" target="_blank" style="display:none;">📄 Open saved file</a>
         </div>
         <div id="save-status" style="margin-top:.5rem;font-size:.85rem;"></div>

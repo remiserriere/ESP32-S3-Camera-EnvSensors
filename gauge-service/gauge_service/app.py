@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -54,6 +55,20 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         mqtt.publish_discovery()
     except Exception as exc:  # pragma: no cover - startup connectivity is environment-dependent
         app.logger.warning("MQTT autodiscovery publish failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Storage write-access helper
+    # ------------------------------------------------------------------
+
+    def _is_writable(path: Path) -> bool:
+        """True if *path* is writable.
+
+        If the file already exists the check is performed on the file itself.
+        If the file does not exist yet the check falls back to its parent
+        directory (i.e. can a new file be created there?).
+        """
+        target = path if path.exists() else path.parent
+        return os.access(target, os.W_OK)
 
     # ------------------------------------------------------------------
     # Calibration helpers
@@ -187,6 +202,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             config=service_config,
             latest=latest,
             existing_calibration=cal.to_json() if cal else "",
+            data_dir_writable=_is_writable(service_config.calibration_file),
         )
 
     @app.get("/config")
@@ -197,6 +213,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             env_overrides=service_config.env_overrides(),
             fields_need_reboot=_FIELDS_NEED_REBOOT,
             ota_modes=OTA_MODES,
+            data_dir_writable=_is_writable(service_config.config_file),
         )
 
     @app.get("/device")
@@ -204,6 +221,8 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         device_cfg = load_device_config(service_config.data_dir)
         ota_cfg = load_ota_config(service_config.data_dir)
         status = ota_status(service_config.data_dir, ota_cfg)
+        _device_file = service_config.data_dir / "device_config.json"
+        _ota_file = service_config.data_dir / "ota_config.json"
         return render_template(
             "device.html",
             config=service_config,
@@ -211,6 +230,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             ota_cfg=ota_cfg,
             ota_modes=OTA_MODES,
             ota_status=status,
+            data_dir_writable=_is_writable(_device_file) and _is_writable(_ota_file),
         )
 
     # ------------------------------------------------------------------
@@ -515,6 +535,27 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
         except Exception as exc:
             app.logger.warning("MQTT publish for device config failed: %s", exc)
             return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
+        return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
+
+    @app.post("/api/device-config/push-direct")
+    def push_device_config_direct() -> Any:
+        """Publish the payload from the request body to MQTT without saving to disk."""
+        body = request.get_json(silent=True) or {}
+        if not body:
+            return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+        try:
+            device_cfg = DeviceConfigPayload.from_dict(body)
+        except Exception as exc:
+            app.logger.debug("Invalid device config payload: %s", exc)
+            return jsonify({"error": "Invalid payload — check field types and names"}), 400
+
+        try:
+            publish_device_config(service_config, device_cfg)
+        except Exception as exc:
+            app.logger.warning("MQTT push-direct failed: %s", exc)
+            return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
+
         return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
 
     # ------------------------------------------------------------------

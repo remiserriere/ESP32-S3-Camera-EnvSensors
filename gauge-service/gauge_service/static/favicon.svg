@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Background -->
+  <rect width="32" height="32" rx="5" fill="#1e293b"/>
+  <!-- Gauge track arc: 7 o'clock → top → 5 o'clock (300° CW) -->
+  <path d="M 11.5,25.8 A 9,9 0 1 1 20.5,25.8"
+        fill="none" stroke="#334155" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Gauge fill arc: 0 % → 60 % (180° CW, ending at 2 o'clock) -->
+  <path d="M 11.5,25.8 A 9,9 0 0 1 20.5,10.2"
+        fill="none" stroke="#3b82f6" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Needle pointing at 60 % -->
+  <line x1="16" y1="18" x2="19.5" y2="11.9"
+        stroke="#f1f5f9" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- Centre hub -->
+  <circle cx="16" cy="18" r="2" fill="#475569"/>
+</svg>

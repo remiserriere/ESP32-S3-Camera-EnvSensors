@@ -130,17 +130,19 @@ static void runPhotoTask() {
         time_manager::syncNtp();
     }
 
+    // ── MQTT config sync ─────────────────────────────────────────────────
+    // Subscribe to the retained config topic; apply any overrides to NVS.
+    // Must run BEFORE OTA so that an updated otaManifestUrl or otaEnabled
+    // flag from the broker is already in g_deviceConfig when OTA runs.
+    // No-op if mqttEnabled is false or broker is not configured.
+    mqtt_config::syncFromBroker();
+
     // ── OTA check while Wi-Fi is already connected ───────────────────────
     // checkAndApply() resets the device if a new firmware is flashed,
     // so the lines below are only reached when there is no pending update.
     if (g_deviceConfig.otaEnabled) {
         ota::checkAndApply();
     }
-
-    // ── MQTT config sync ─────────────────────────────────────────────────
-    // Subscribe to retained config topic; apply any overrides to NVS.
-    // No-op if mqttEnabled is false or broker is not set.
-    mqtt_config::syncFromBroker();
 
     // Capture
     if (!camera_module::begin()) {

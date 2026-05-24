@@ -318,6 +318,18 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             headers={"Content-Disposition": "inline; filename=service_config.json"},
         )
 
+    @app.post("/api/mqtt/discover")
+    def mqtt_publish_discovery() -> Any:
+        """Force a re-publish of MQTT Home Assistant autodiscovery messages."""
+        if not service_config.mqtt_enabled:
+            return jsonify({"ok": False, "error": "MQTT is disabled"}), 400
+        try:
+            mqtt.publish_discovery()
+        except Exception as exc:
+            app.logger.warning("MQTT autodiscovery publish failed: %s", exc)
+            return jsonify({"ok": False, "error": "MQTT autodiscovery failed — check broker settings"}), 502
+        return jsonify({"ok": True})
+
     @app.post("/api/config")
     def save_service_config() -> Any:
         """Persist editable service configuration and hot-reload safe fields."""

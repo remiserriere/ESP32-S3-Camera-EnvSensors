@@ -14,7 +14,7 @@ bool uploader::wifiConnect() {
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - start > WIFI_TIMEOUT_MS) {
-            Serial.println(" TIMEOUT");
+            Serial.println(" TIMEOUT\r\n");
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
             return false;
@@ -22,7 +22,7 @@ bool uploader::wifiConnect() {
         delay(300);
         Serial.print(".");
     }
-    Serial.printf(" OK (IP: %s)\n", WiFi.localIP().toString().c_str());
+    Serial.printf(" OK (IP: %s)\r\n", WiFi.localIP().toString().c_str());
     return true;
 }
 
@@ -81,9 +81,9 @@ int uploader::uploadPhoto(const uint8_t* jpegBuf, size_t jpegLen, const UploadMe
     int code = http.POST(multipart.data(), multipart.size());
 
     if (code > 0) {
-        Serial.printf("[Upload] HTTP %d\n", code);
+        Serial.printf("[Upload] HTTP %d\r\n", code);
     } else {
-        Serial.printf("[Upload] Error: %s\n", http.errorToString(code).c_str());
+        Serial.printf("[Upload] Error: %s\r\n", http.errorToString(code).c_str());
     }
 
     http.end();

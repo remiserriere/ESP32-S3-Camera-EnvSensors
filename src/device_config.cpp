@@ -24,6 +24,7 @@ void device_config::resetToDefaults() {
     g_deviceConfig.photoHour          = PHOTO_HOUR;
     g_deviceConfig.photoMinute        = PHOTO_MINUTE;
     g_deviceConfig.photoWindowMin     = PHOTO_WINDOW_MIN;
+    g_deviceConfig.coldBootPhotoEn    = false;
 
     strncpy(g_deviceConfig.wifiSsid,       WIFI_SSID,          sizeof(g_deviceConfig.wifiSsid)       - 1);
     strncpy(g_deviceConfig.wifiPassword,   WIFI_PASSWORD,      sizeof(g_deviceConfig.wifiPassword)   - 1);
@@ -41,6 +42,8 @@ void device_config::resetToDefaults() {
 
     strncpy(g_deviceConfig.deviceName,     BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.deviceName)     - 1);
 
+    g_deviceConfig.diagEn             = false;
+
     g_deviceConfig.bootWindowSec      = BOOT_WINDOW_SEC;
 
     strncpy(g_deviceConfig.ntpServer1,  NTP_SERVER_1, sizeof(g_deviceConfig.ntpServer1)  - 1);
@@ -51,6 +54,7 @@ void device_config::resetToDefaults() {
 void device_config::load() {
     resetToDefaults();   // always start from compile-time defaults
 
+    // Open the NVS namespace for reading; if it doesn't exist yet, just keep the defaults.
     Preferences p;
     if (!p.begin(CFG_NS, true)) {
         // Namespace doesn't exist yet (first boot) – defaults are fine
@@ -58,33 +62,50 @@ void device_config::load() {
         return;
     }
 
+    // Helper functions to read values from Preferences with fallback to current value (which is initialized to defaults at the start of load()).
+    //auto readStr = [&](const char* key, char* buf, size_t maxLen) {
+    //    String s = p.getString(key, buf);
+    //    strncpy(buf, s.c_str(), maxLen - 1);
+    //    buf[maxLen - 1] = '\0';
+    //};
+    auto readStr = [&](const char* key, char* buf, size_t maxLen) {
+        if (p.isKey(key)) {
+            String s = p.getString(key);
+            strncpy(buf, s.c_str(), maxLen - 1);
+            buf[maxLen - 1] = '\0';
+        }
+    };
+
     // Read each field; if the key is absent the default from resetToDefaults() is kept.
+
+    // DS18B20
     g_deviceConfig.ds18b20Enabled     = p.getBool ("ds18_en",  g_deviceConfig.ds18b20Enabled);
     g_deviceConfig.ds18b20IntervalMin = p.getUChar("ds18_int", g_deviceConfig.ds18b20IntervalMin);
 
+    // SHT3x
     g_deviceConfig.sht3xEnabled       = p.getBool ("sht_en",   g_deviceConfig.sht3xEnabled);
     g_deviceConfig.sht3xIntervalMin   = p.getUChar("sht_int",  g_deviceConfig.sht3xIntervalMin);
 
+    // INA219
     g_deviceConfig.ina219Enabled      = p.getBool ("ina_en",   g_deviceConfig.ina219Enabled);
     g_deviceConfig.ina219IntervalMin  = p.getUChar("ina_int",  g_deviceConfig.ina219IntervalMin);
 
+    // Photo schedule
     g_deviceConfig.photoHour          = p.getUChar("ph_hour",  g_deviceConfig.photoHour);
     g_deviceConfig.photoMinute        = p.getUChar("ph_min",   g_deviceConfig.photoMinute);
     g_deviceConfig.photoWindowMin     = p.getUChar("ph_win",   g_deviceConfig.photoWindowMin);
-
-    auto readStr = [&](const char* key, char* buf, size_t maxLen) {
-        String s = p.getString(key, buf);
-        strncpy(buf, s.c_str(), maxLen - 1);
-        buf[maxLen - 1] = '\0';
-    };
-
+    g_deviceConfig.coldBootPhotoEn    = p.getBool ("cb_photo_en", g_deviceConfig.coldBootPhotoEn);   
+    
+    // Network
     readStr("wifi_ssid",  g_deviceConfig.wifiSsid,       sizeof(g_deviceConfig.wifiSsid));
     readStr("wifi_pass",  g_deviceConfig.wifiPassword,   sizeof(g_deviceConfig.wifiPassword));
     readStr("upload_ep",  g_deviceConfig.uploadEndpoint, sizeof(g_deviceConfig.uploadEndpoint));
 
+    // OTA
     g_deviceConfig.otaEnabled         = p.getBool("ota_en",  g_deviceConfig.otaEnabled);
     readStr("ota_url",    g_deviceConfig.otaManifestUrl,  sizeof(g_deviceConfig.otaManifestUrl));
 
+    // MQTT
     g_deviceConfig.mqttEnabled        = p.getBool  ("mqtt_en",  g_deviceConfig.mqttEnabled);
     readStr("mqtt_host",  g_deviceConfig.mqttBroker,    sizeof(g_deviceConfig.mqttBroker));
     g_deviceConfig.mqttPort           = p.getUShort("mqtt_port", g_deviceConfig.mqttPort);
@@ -92,10 +113,14 @@ void device_config::load() {
     readStr("mqtt_pass",  g_deviceConfig.mqttPassword,  sizeof(g_deviceConfig.mqttPassword));
     readStr("mqtt_id",    g_deviceConfig.mqttClientId,  sizeof(g_deviceConfig.mqttClientId));
 
+    // BLE device name and diagnostics
     readStr("dev_name",   g_deviceConfig.deviceName,      sizeof(g_deviceConfig.deviceName));
+    g_deviceConfig.diagEn = p.getBool("diag_en", g_deviceConfig.diagEn);
 
+    // Boot options
     g_deviceConfig.bootWindowSec = p.getUChar("boot_win", g_deviceConfig.bootWindowSec);
 
+    // NTP and timezone
     readStr("ntp_srv1", g_deviceConfig.ntpServer1,  sizeof(g_deviceConfig.ntpServer1));
     readStr("ntp_srv2", g_deviceConfig.ntpServer2,  sizeof(g_deviceConfig.ntpServer2));
     readStr("ntp_tz",   g_deviceConfig.ntpTimezone, sizeof(g_deviceConfig.ntpTimezone));
@@ -120,6 +145,7 @@ void device_config::save() {
     p.putUChar("ph_hour",  g_deviceConfig.photoHour);
     p.putUChar("ph_min",   g_deviceConfig.photoMinute);
     p.putUChar("ph_win",   g_deviceConfig.photoWindowMin);
+    p.putBool ("cb_photo_en", g_deviceConfig.coldBootPhotoEn);
 
     p.putString("wifi_ssid", g_deviceConfig.wifiSsid);
     p.putString("wifi_pass", g_deviceConfig.wifiPassword);
@@ -136,6 +162,8 @@ void device_config::save() {
     p.putString("mqtt_id",   g_deviceConfig.mqttClientId);
 
     p.putString("dev_name",g_deviceConfig.deviceName);
+
+    p.putBool("diag_en", g_deviceConfig.diagEn);
 
     p.putUChar("boot_win", g_deviceConfig.bootWindowSec);
 
@@ -158,9 +186,10 @@ void device_config::print() {
     Serial.printf ("│  INA219   : %-8s  interval: %3d min                  │\r\n",
                    g_deviceConfig.ina219Enabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.ina219IntervalMin);
-    Serial.printf ("│  Photo    : %02d:%02d  window: +%d min                      │\r\n",
+    Serial.printf ("\u2502  Photo    : %02d:%02d  window: +%d min  cold-boot photo: %-3s     \u2502\r\n",
                    g_deviceConfig.photoHour, g_deviceConfig.photoMinute,
-                   g_deviceConfig.photoWindowMin);
+                   g_deviceConfig.photoWindowMin,
+                   g_deviceConfig.coldBootPhotoEn ? "ON" : "OFF");
     Serial.printf ("│  WiFi     : %-47s│\r\n", g_deviceConfig.wifiSsid);
     Serial.printf ("│  Endpoint : %-47s│\r\n", g_deviceConfig.uploadEndpoint);
     Serial.printf ("│  OTA      : %-8s  %-38s│\r\n",
@@ -174,6 +203,7 @@ void device_config::print() {
                    g_deviceConfig.mqttEnabled ? "ENABLED" : "DISABLED",
                    mqttHost);
     Serial.printf ("│  BLE name : %-47s│\r\n", g_deviceConfig.deviceName);
+    Serial.printf ("│  BLE diag : %-47s│\r\n", g_deviceConfig.diagEn ? "ENABLED" : "DISABLED");
     Serial.printf ("│  Boot win : %-3u s  (0=web off, min 5 s CLI)             │\r\n",
                    g_deviceConfig.bootWindowSec);
     Serial.printf ("│  NTP 1    : %-47s│\r\n", g_deviceConfig.ntpServer1);

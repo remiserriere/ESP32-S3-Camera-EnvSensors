@@ -70,8 +70,8 @@ static bool isNewer(const String& local, const String& remote) {
 bool ota::checkAndApply() {
     if (!g_deviceConfig.otaEnabled) return false;
 
-    Serial.printf("[OTA] Current version: %s\n", FIRMWARE_VERSION);
-    Serial.printf("[OTA] Checking manifest: %s\n", g_deviceConfig.otaManifestUrl);
+    Serial.printf("[OTA] Current version: %s\r\n", FIRMWARE_VERSION);
+    Serial.printf("[OTA] Checking manifest: %s\r\n", g_deviceConfig.otaManifestUrl);
 
     // Use WiFiClientSecure for https:// URLs (accepts self-signed / local CA).
     // setInsecure() skips cert validation — acceptable for a local server;
@@ -91,7 +91,7 @@ bool ota::checkAndApply() {
     int code = http.GET();
 
     if (code != 200) {
-        Serial.printf("[OTA] Manifest fetch failed (HTTP %d)\n", code);
+        Serial.printf("[OTA] Manifest fetch failed (HTTP %d)\r\n", code);
         http.end();
         return false;
     }
@@ -103,7 +103,7 @@ bool ota::checkAndApply() {
     String binaryUrl     = jsonExtractString(body, "url");
     String notes         = jsonExtractString(body, "notes");
 
-    Serial.printf("[OTA] Remote version: %s\n", remoteVersion.c_str());
+    Serial.printf("[OTA] Remote version: %s\r\n", remoteVersion.c_str());
 
     if (remoteVersion.isEmpty() || binaryUrl.isEmpty()) {
         Serial.println("[OTA] Malformed manifest – aborting");
@@ -115,9 +115,9 @@ bool ota::checkAndApply() {
         return false;
     }
 
-    Serial.printf("[OTA] Update available: %s → %s\n", FIRMWARE_VERSION, remoteVersion.c_str());
-    if (!notes.isEmpty()) Serial.printf("[OTA] Notes: %s\n", notes.c_str());
-    Serial.printf("[OTA] Downloading: %s\n", binaryUrl.c_str());
+    Serial.printf("[OTA] Update available: %s → %s\r\n", FIRMWARE_VERSION, remoteVersion.c_str());
+    if (!notes.isEmpty()) Serial.printf("[OTA] Notes: %s\r\n", notes.c_str());
+    Serial.printf("[OTA] Downloading: %s\r\n", binaryUrl.c_str());
 
     // Re-use the same secure/plain choice for the binary download.
     WiFiClient         dlPlain;
@@ -134,7 +134,7 @@ bool ota::checkAndApply() {
     int dlCode = dlHttp.GET();
 
     if (dlCode != 200) {
-        Serial.printf("[OTA] Binary download failed (HTTP %d)\n", dlCode);
+        Serial.printf("[OTA] Binary download failed (HTTP %d)\r\n", dlCode);
         dlHttp.end();
         return false;
     }
@@ -146,10 +146,10 @@ bool ota::checkAndApply() {
         return false;
     }
 
-    Serial.printf("[OTA] Binary size: %d bytes\n", contentLength);
+    Serial.printf("[OTA] Binary size: %d bytes\r\n", contentLength);
 
     if (!Update.begin(contentLength)) {
-        Serial.printf("[OTA] Not enough partition space (error %d)\n", Update.getError());
+        Serial.printf("[OTA] Not enough partition space (error %d)\r\n", Update.getError());
         dlHttp.end();
         return false;
     }
@@ -159,13 +159,13 @@ bool ota::checkAndApply() {
     dlHttp.end();
 
     if (written != (size_t)contentLength) {
-        Serial.printf("[OTA] Write incomplete: %zu / %d bytes\n", written, contentLength);
+        Serial.printf("[OTA] Write incomplete: %zu / %d bytes\r\n", written, contentLength);
         Update.abort();
         return false;
     }
 
     if (!Update.end(true)) {
-        Serial.printf("[OTA] Finalise failed (error %d)\n", Update.getError());
+        Serial.printf("[OTA] Finalise failed (error %d)\r\n", Update.getError());
         return false;
     }
 
@@ -205,7 +205,7 @@ void ota::requestMaintenanceMode(bool enable) {
     p.begin(NVS_NS_OTA, false);
     p.putBool(NVS_KEY_MAINT, enable);
     p.end();
-    Serial.printf("[OTA] Maintenance mode NVS flag set to: %s\n", enable ? "true" : "false");
+    Serial.printf("[OTA] Maintenance mode NVS flag set to: %s\r\n", enable ? "true" : "false");
 }
 
 void ota::enterMaintenanceMode(uint32_t timeoutMs) {
@@ -213,7 +213,7 @@ void ota::enterMaintenanceMode(uint32_t timeoutMs) {
     requestMaintenanceMode(false);
 
     Serial.println("[OTA] Entering ArduinoOTA maintenance mode...");
-    Serial.printf("[OTA] Timeout: %u ms\n", timeoutMs);
+    Serial.printf("[OTA] Timeout: %u ms\r\n", timeoutMs);
 
     // Wi-Fi should already be up; if not, try to connect
     if (WiFi.status() != WL_CONNECTED) {
@@ -229,7 +229,7 @@ void ota::enterMaintenanceMode(uint32_t timeoutMs) {
         }
     }
 
-    Serial.printf("[OTA] IP: %s  – use: pio run -t upload --upload-port %s\n",
+    Serial.printf("[OTA] IP: %s  – use: pio run -t upload --upload-port %s\r\n",
                   WiFi.localIP().toString().c_str(),
                   WiFi.localIP().toString().c_str());
 
@@ -237,14 +237,14 @@ void ota::enterMaintenanceMode(uint32_t timeoutMs) {
     ArduinoOTA.setPassword(OTA_DEVICE_PASSWORD);
 
     ArduinoOTA.onStart([]() {
-        Serial.printf("[OTA] ArduinoOTA start (%s)\n",
+        Serial.printf("[OTA] ArduinoOTA start (%s)\r\n",
                       ArduinoOTA.getCommand() == U_FLASH ? "firmware" : "filesystem");
     });
     ArduinoOTA.onEnd([]() {
-        Serial.println("\n[OTA] ArduinoOTA complete – restarting");
+        Serial.println("\r\n[OTA] ArduinoOTA complete – restarting");
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("[OTA] Progress: %u%%\r", progress * 100 / total);
+        Serial.printf("[OTA] Progress: %u%%\r\n", progress * 100 / total);
     });
     ArduinoOTA.onError([](ota_error_t error) {
         Serial.printf("[OTA] Error [%u]: ", error);

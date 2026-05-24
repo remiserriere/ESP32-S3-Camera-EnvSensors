@@ -26,7 +26,7 @@ Sht3xReading sht3x::read() {
     r.valid = !isnan(r.temperatureC) && !isnan(r.humidityPct);
 
     if (r.valid) {
-        Serial.printf("[SHT3x] T=%.2f°C  RH=%.1f%%\n", r.temperatureC, r.humidityPct);
+        Serial.printf("[SHT3x] T=%.2f°C  RH=%.1f%%\r\n", r.temperatureC, r.humidityPct);
     } else {
         Serial.println("[SHT3x] Read failed");
     }

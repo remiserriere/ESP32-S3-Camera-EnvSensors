@@ -29,6 +29,13 @@ struct BtHomePayload {
     // Power (BTHome Object ID 0x0B, uint24, 0.01W)
     float   powerW;              // W
     bool    hasPower;
+
+    // Diagnostic timing (sent as Manufacturer Specific Data in BLE scan response).
+    // Format: company 0xFFFF | uint16 LE next_wakeup_s | uint16 LE next_photo_s.
+    // Values >= 0xFFFF mean "unknown".
+    uint32_t nextWakeupS;        // seconds until next deep-sleep wakeup
+    uint32_t nextPhotoS;         // seconds until next scheduled photo (UINT32_MAX = unknown)
+    bool     hasDiag;
 };
 
 namespace bthome {

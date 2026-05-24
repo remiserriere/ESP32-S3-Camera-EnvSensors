@@ -104,6 +104,13 @@ static void runSensorTasks(const TaskFlags& flags) {
         payload.hasPower   = true;
     }
 
+    // ── BLE diagnostic timing data ────────────────────────────────────────
+    if (g_deviceConfig.diagEn) {
+        payload.nextWakeupS = scheduler::nextSleepSeconds(flags);
+        payload.nextPhotoS  = scheduler::secondsUntilNextPhoto();
+        payload.hasDiag     = true;
+    }
+
     bthome::begin();
     bthome::advertise(payload);
     bthome::end();
@@ -123,17 +130,19 @@ static void runPhotoTask() {
         time_manager::syncNtp();
     }
 
+    // ── MQTT config sync ─────────────────────────────────────────────────
+    // Subscribe to the retained config topic; apply any overrides to NVS.
+    // Must run BEFORE OTA so that an updated otaManifestUrl or otaEnabled
+    // flag from the broker is already in g_deviceConfig when OTA runs.
+    // No-op if mqttEnabled is false or broker is not configured.
+    mqtt_config::syncFromBroker();
+
     // ── OTA check while Wi-Fi is already connected ───────────────────────
     // checkAndApply() resets the device if a new firmware is flashed,
     // so the lines below are only reached when there is no pending update.
     if (g_deviceConfig.otaEnabled) {
         ota::checkAndApply();
     }
-
-    // ── MQTT config sync ─────────────────────────────────────────────────
-    // Subscribe to retained config topic; apply any overrides to NVS.
-    // No-op if mqttEnabled is false or broker is not set.
-    mqtt_config::syncFromBroker();
 
     // Capture
     if (!camera_module::begin()) {
@@ -263,6 +272,12 @@ void setup() {
 
     Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d Photo=%d\r\n",
                   flags.readDs18b20, flags.readSht3x, flags.readIna219, flags.takePhoto);
+
+    // ── Cold-boot photo override ──────────────────────────────────────────
+    if (isColdBoot && g_deviceConfig.coldBootPhotoEn) {
+        flags.takePhoto = true;
+        Serial.println("[SCHED] Cold-boot photo enabled – forcing photo task");
+    }
 
     // ── Run sensor tasks (publishes via BTHome BLE) ───────────────────────
     runSensorTasks(flags);

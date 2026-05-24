@@ -31,7 +31,7 @@ struct DeviceConfig {
     uint8_t photoHour;              // default: PHOTO_HOUR     (0-23)
     uint8_t photoMinute;            // default: PHOTO_MINUTE   (0-59)
     uint8_t photoWindowMin;         // default: PHOTO_WINDOW_MIN
-
+    bool    coldBootPhotoEn;        // default: false – take a photo on every cold boot
     // ── Network ──────────────────────────────────────────────────────────────
     char    wifiSsid[64];           // default: WIFI_SSID
     char    wifiPassword[64];       // default: WIFI_PASSWORD
@@ -51,7 +51,7 @@ struct DeviceConfig {
 
     // ── BLE ──────────────────────────────────────────────────────────────────
     char    deviceName[32];         // default: BTHOME_DEVICE_NAME
-
+    bool    diagEn;                 // default: false – add next-wakeup/next-photo counters to BLE scan response
     // ── Boot configuration window ────────────────────────────────────────────
     // Seconds CLI + web config server are available at every boot/wake.
     // 5 s are always reserved for CLI regardless of this value.

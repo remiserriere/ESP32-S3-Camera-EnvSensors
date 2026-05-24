@@ -11,6 +11,7 @@
 #include <WiFiServer.h>
 #include <WiFiClient.h>
 #include "mqtt_config/mqtt_config.h"
+#include "ota/ota.h"
 #include "config.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -112,10 +113,12 @@ static void applyFormField(const String& key, const String& val) {
     else if (key == "ph_hour")   g_deviceConfig.photoHour          = (uint8_t)constrain(val.toInt(), 0, 23);
     else if (key == "ph_min")    g_deviceConfig.photoMinute        = (uint8_t)constrain(val.toInt(), 0, 59);
     else if (key == "ph_win")    g_deviceConfig.photoWindowMin     = (uint8_t)constrain(val.toInt(), 1, 60);
+    else if (key == "cb_photo_en") g_deviceConfig.coldBootPhotoEn   = (val == "1");
     else if (key == "ota_en")    g_deviceConfig.otaEnabled         = (val == "1");
     else if (key == "mqtt_en")   g_deviceConfig.mqttEnabled        = (val == "1");
     else if (key == "mqtt_port") { int v = val.toInt(); if (v >= 1 && v <= 65535) g_deviceConfig.mqttPort = (uint16_t)v; }
     else if (key == "boot_win")  g_deviceConfig.bootWindowSec      = (uint8_t)constrain(val.toInt(), 0, 180);
+    else if (key == "diag_en")   g_deviceConfig.diagEn             = (val == "1");
     // String fields: only update when the user actually typed something.
     else if (!val.isEmpty()) {
         if      (key == "wifi_ssid")  strncpy(g_deviceConfig.wifiSsid,       val.c_str(), sizeof(g_deviceConfig.wifiSsid)       - 1);
@@ -258,6 +261,12 @@ static void sendConfigPage(WiFiClient& client, int secondsLeft) {
         "<label>Fen&#234;tre de d&#233;marrage (0&#8209;180&nbsp;s &mdash; 0&nbsp;=&nbsp;web d&#233;sactiv&#233;)</label>"
         "<input type='number' name='boot_win' min='0' max='180' value='%u'>\n",
         g_deviceConfig.bootWindowSec);
+    client.printf(
+        "<div class='cb'>"
+        "<input type='hidden' name='diag_en' value='0'>"
+        "<input type='checkbox' name='diag_en' value='1'%s>"
+        "<label>Diagnostics BLE (compteurs next wakeup/photo dans le scan response)</label></div>\n",
+        g_deviceConfig.diagEn ? " checked" : "");
 
     // ── Réseau ──────────────────────────────────────────────────────────────
     client.print(F("<h3>&#128246; R&#233;seau Wi&#8209;Fi</h3>"));
@@ -328,6 +337,12 @@ static void sendConfigPage(WiFiClient& client, int secondsLeft) {
         "<label>Fen&#234;tre d'acceptation (min)</label>"
         "<input type='number' name='ph_win' min='1' max='60' value='%u'>\n",
         g_deviceConfig.photoHour, g_deviceConfig.photoMinute, g_deviceConfig.photoWindowMin);
+    client.printf(
+        "<div class='cb'>"
+        "<input type='hidden' name='cb_photo_en' value='0'>"
+        "<input type='checkbox' name='cb_photo_en' value='1'%s>"
+        "<label>Photo au d&#233;marrage &#224; froid (cold-boot)</label></div>\n",
+        g_deviceConfig.coldBootPhotoEn ? " checked" : "");
 
     // ── OTA ─────────────────────────────────────────────────────────────────
     client.print(F("<h3>&#128260; OTA</h3>"));
@@ -807,6 +822,7 @@ static void menuPhoto() {
     g_deviceConfig.photoHour      = promptU8("Heure (0-23)",          g_deviceConfig.photoHour,      0,  23);
     g_deviceConfig.photoMinute    = promptU8("Minute (0-59)",         g_deviceConfig.photoMinute,    0,  59);
     g_deviceConfig.photoWindowMin = promptU8("Fenêtre d'acceptation (min)", g_deviceConfig.photoWindowMin, 1, 60);
+    g_deviceConfig.coldBootPhotoEn = promptBool("Photo au démarrage à froid (cold-boot)", g_deviceConfig.coldBootPhotoEn);
 }
 
 static void menuNetwork() {
@@ -847,6 +863,7 @@ static void menuMqtt() {
 static void menuBle() {
     Serial.println(F("\n── BLE ────────────────────────────────────────────────────"));
     promptStr("Nom BLE de l'appareil", g_deviceConfig.deviceName, sizeof(g_deviceConfig.deviceName));
+    g_deviceConfig.diagEn = promptBool("Diagnostics BLE (next wakeup/photo dans scan response)", g_deviceConfig.diagEn);
 }
 
 static void menuBootWindow() {
@@ -1352,6 +1369,24 @@ void serial_cli::offerConfigWindow() {
         }
     }
 
+    // ── Auto-sync MQTT config while Wi-Fi is already up ──────────────────────
+    if (wifiConnected && g_deviceConfig.mqttEnabled) {
+        Serial.println(F("[Config] Synchronisation de la config MQTT..."));
+        bool updated = mqtt_config::syncFromBroker();
+        Serial.println(updated
+            ? F("[Config] Config MQTT appliquée et sauvegardée.")
+            : F("[Config] Pas de mise à jour MQTT disponible."));
+    }
+
+    // ── Auto-check OTA ────────────────────────────────────────────────────────
+    // If newer firmware is found it is applied and the device reboots; otherwise
+    // execution falls through to the interactive config window.
+    if (wifiConnected && g_deviceConfig.otaEnabled) {
+        Serial.println(F("[Config] Vérification OTA..."));
+        ota::checkAndApply();   // reboots on success; returns false when up-to-date
+        Serial.println(F("[Config] Firmware à jour."));
+    }
+
     Serial.printf("[Config] Fenêtre : %u s – appuyez sur une touche pour le menu CLI.\r\n",
                   totalMs / 1000);
     Serial.flush();
@@ -1372,7 +1407,11 @@ void serial_cli::offerConfigWindow() {
     bool     webHandled  = false;
     bool     serverPaused = false;
 
-    while (millis() < deadline) {
+    // Outer loop re-enters after the deadline if a /pause request arrives in the
+    // final milliseconds (race-condition drain: one extra handleBootWebClient()
+    // is called after each inner-loop exit to catch any pending connection).
+    do {
+    while (serverPaused || millis() < deadline) {
         // CLI keypress → stop HTTP server (free port 80) but keep WiFi alive
         // so the CLI diagnostics can use it without reconnecting.
         if (Serial.available()) {
@@ -1383,7 +1422,9 @@ void serial_cli::offerConfigWindow() {
         }
 
         if (serverStarted) {
-            int secsLeft = (int)((deadline - millis()) / 1000);
+            // When paused, pass -1 so a page reload shows "en pause" instead of
+            // a stale or very-large countdown value.
+            int secsLeft = serverPaused ? -1 : (int)((deadline - millis()) / 1000);
             int action   = handleBootWebClient(server, secsLeft, deadline, serverPaused);
             if (action == 1) {
                 server.end(); serverStarted = false;
@@ -1403,6 +1444,12 @@ void serial_cli::offerConfigWindow() {
 
         delay(10);
     }
+    // ── Drain: process one extra pending client that may have arrived at the ─
+    // ── exact deadline boundary (e.g. a /pause click in the last second).   ─
+    if (serverStarted && !cliMode && !webHandled) {
+        handleBootWebClient(server, -1, deadline, serverPaused);
+    }
+    } while (serverPaused && !cliMode && !webHandled);
 
     if (serverStarted) { server.end(); serverStarted = false; }
 

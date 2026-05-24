@@ -18,6 +18,7 @@ from .calibration import GaugeCalibration
 from .config import ServiceConfig, _FIELD_ENV_MAP, _FIELDS_NEED_REBOOT, _VALID_NEEDLE_METHODS
 from .device_config_manager import (
     DeviceConfigPayload,
+    fetch_device_config_from_mqtt,
     load_device_config,
     publish_device_config,
     save_device_config,
@@ -548,6 +549,22 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
             app.logger.warning("MQTT publish for device config failed: %s", exc)
             return jsonify({"ok": False, "error": "MQTT publish failed — check broker settings"}), 502
         return jsonify({"ok": True, "topic": f"{device_cfg.mqtt_id}/config/set"})
+
+    @app.get("/api/device-config/fetch-mqtt")
+    def fetch_device_config_from_mqtt_route() -> Any:
+        """Subscribe to the MQTT retained config topic and return the merged payload.
+
+        Uses the locally stored config as the base so that keys absent from the
+        broker payload keep their persisted values (mirrors the device's
+        partial-update semantics).
+        """
+        base = load_device_config(service_config.data_dir)
+        try:
+            merged = fetch_device_config_from_mqtt(service_config, base)
+            return jsonify({"ok": True, "config": merged.to_dict()})
+        except Exception as exc:
+            app.logger.warning("MQTT config fetch failed: %s", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 503
 
     @app.post("/api/device-config/push-direct")
     def push_device_config_direct() -> Any:

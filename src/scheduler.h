@@ -18,6 +18,10 @@ namespace scheduler {
     // until the next event (sensor read or photo window).
     uint32_t nextSleepSeconds(const TaskFlags& completed);
 
+    // Seconds until the next scheduled photo window.
+    // Returns UINT32_MAX if time is not trusted or no photo is configured.
+    uint32_t secondsUntilNextPhoto();
+
     // Enter deep sleep for 'seconds'. Does not return.
     [[noreturn]] void deepSleep(uint32_t seconds);
 }

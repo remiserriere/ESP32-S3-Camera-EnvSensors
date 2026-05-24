@@ -39,7 +39,7 @@ static bool _ready = false;
 bool camera_module::begin() {
     esp_err_t err = esp_camera_init(&CAM_CONFIG);
     if (err != ESP_OK) {
-        Serial.printf("[CAM] Init failed: 0x%x\n", err);
+        Serial.printf("[CAM] Init failed: 0x%x\r\n", err);
         return false;
     }
     _ready = true;
@@ -68,7 +68,7 @@ CameraFrame camera_module::capture() {
     frame.valid = true;
     frame._fb   = static_cast<void*>(fb);
 
-    Serial.printf("[CAM] Captured %zu bytes\n", frame.len);
+    Serial.printf("[CAM] Captured %zu bytes\r\n", frame.len);
     return frame;
 }
 

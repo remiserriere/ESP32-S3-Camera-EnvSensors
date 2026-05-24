@@ -104,6 +104,13 @@ static void runSensorTasks(const TaskFlags& flags) {
         payload.hasPower   = true;
     }
 
+    // ── BLE diagnostic timing data ────────────────────────────────────────
+    if (g_deviceConfig.diagEn) {
+        payload.nextWakeupS = scheduler::nextSleepSeconds(flags);
+        payload.nextPhotoS  = scheduler::secondsUntilNextPhoto();
+        payload.hasDiag     = true;
+    }
+
     bthome::begin();
     bthome::advertise(payload);
     bthome::end();
@@ -263,6 +270,12 @@ void setup() {
 
     Serial.printf("[SCHED] Tasks: DS18B20=%d SHT3x=%d INA219=%d Photo=%d\r\n",
                   flags.readDs18b20, flags.readSht3x, flags.readIna219, flags.takePhoto);
+
+    // ── Cold-boot photo override ──────────────────────────────────────────
+    if (isColdBoot && g_deviceConfig.coldBootPhotoEn) {
+        flags.takePhoto = true;
+        Serial.println("[SCHED] Cold-boot photo enabled – forcing photo task");
+    }
 
     // ── Run sensor tasks (publishes via BTHome BLE) ───────────────────────
     runSensorTasks(flags);

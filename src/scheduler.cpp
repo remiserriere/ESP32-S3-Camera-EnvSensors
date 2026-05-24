@@ -94,6 +94,36 @@ uint32_t scheduler::nextSleepSeconds(const TaskFlags& completed) {
     return minSleep;
 }
 
+uint32_t scheduler::secondsUntilNextPhoto() {
+    if (!time_manager::isTrusted()) return UINT32_MAX;
+
+    RtcState& rtc = getRtcState();
+    struct tm now_tm;
+    time_manager::nowLocal(now_tm);
+
+    int currentMinutes = now_tm.tm_hour * 60 + now_tm.tm_min;
+    int targetMinutes  = g_deviceConfig.photoHour * 60 + g_deviceConfig.photoMinute;
+
+    bool takenToday = (now_tm.tm_year + 1900 == rtc.lastPhotoYear) &&
+                      (now_tm.tm_yday          == rtc.lastPhotoDayOfYear);
+
+    int minutesUntil;
+    if (!takenToday) {
+        if (currentMinutes <= targetMinutes) {
+            // Window not yet reached today
+            minutesUntil = targetMinutes - currentMinutes;
+        } else {
+            // Window already passed today without a photo – wait until tomorrow
+            minutesUntil = (24 * 60 - currentMinutes) + targetMinutes;
+        }
+    } else {
+        // Already taken today – next opportunity is tomorrow
+        minutesUntil = (24 * 60 - currentMinutes) + targetMinutes;
+    }
+
+    return (uint32_t)(minutesUntil * 60);
+}
+
 void scheduler::deepSleep(uint32_t seconds) {
     RtcState& rtc  = getRtcState();
     int64_t   now  = time_manager::nowEpoch();

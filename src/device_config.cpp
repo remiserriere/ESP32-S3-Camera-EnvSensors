@@ -24,6 +24,7 @@ void device_config::resetToDefaults() {
     g_deviceConfig.photoHour          = PHOTO_HOUR;
     g_deviceConfig.photoMinute        = PHOTO_MINUTE;
     g_deviceConfig.photoWindowMin     = PHOTO_WINDOW_MIN;
+    g_deviceConfig.coldBootPhotoEn    = false;
 
     strncpy(g_deviceConfig.wifiSsid,       WIFI_SSID,          sizeof(g_deviceConfig.wifiSsid)       - 1);
     strncpy(g_deviceConfig.wifiPassword,   WIFI_PASSWORD,      sizeof(g_deviceConfig.wifiPassword)   - 1);
@@ -40,6 +41,8 @@ void device_config::resetToDefaults() {
     strncpy(g_deviceConfig.mqttClientId, BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.mqttClientId) - 1);
 
     strncpy(g_deviceConfig.deviceName,     BTHOME_DEVICE_NAME, sizeof(g_deviceConfig.deviceName)     - 1);
+
+    g_deviceConfig.diagEn             = false;
 
     g_deviceConfig.bootWindowSec      = BOOT_WINDOW_SEC;
 
@@ -71,6 +74,7 @@ void device_config::load() {
     g_deviceConfig.photoHour          = p.getUChar("ph_hour",  g_deviceConfig.photoHour);
     g_deviceConfig.photoMinute        = p.getUChar("ph_min",   g_deviceConfig.photoMinute);
     g_deviceConfig.photoWindowMin     = p.getUChar("ph_win",   g_deviceConfig.photoWindowMin);
+    g_deviceConfig.coldBootPhotoEn    = p.getBool ("cb_photo_en", g_deviceConfig.coldBootPhotoEn);
 
     auto readStr = [&](const char* key, char* buf, size_t maxLen) {
         String s = p.getString(key, buf);
@@ -93,6 +97,8 @@ void device_config::load() {
     readStr("mqtt_id",    g_deviceConfig.mqttClientId,  sizeof(g_deviceConfig.mqttClientId));
 
     readStr("dev_name",   g_deviceConfig.deviceName,      sizeof(g_deviceConfig.deviceName));
+
+    g_deviceConfig.diagEn = p.getBool("diag_en", g_deviceConfig.diagEn);
 
     g_deviceConfig.bootWindowSec = p.getUChar("boot_win", g_deviceConfig.bootWindowSec);
 
@@ -120,6 +126,7 @@ void device_config::save() {
     p.putUChar("ph_hour",  g_deviceConfig.photoHour);
     p.putUChar("ph_min",   g_deviceConfig.photoMinute);
     p.putUChar("ph_win",   g_deviceConfig.photoWindowMin);
+    p.putBool ("cb_photo_en", g_deviceConfig.coldBootPhotoEn);
 
     p.putString("wifi_ssid", g_deviceConfig.wifiSsid);
     p.putString("wifi_pass", g_deviceConfig.wifiPassword);
@@ -136,6 +143,8 @@ void device_config::save() {
     p.putString("mqtt_id",   g_deviceConfig.mqttClientId);
 
     p.putString("dev_name",g_deviceConfig.deviceName);
+
+    p.putBool("diag_en", g_deviceConfig.diagEn);
 
     p.putUChar("boot_win", g_deviceConfig.bootWindowSec);
 
@@ -158,9 +167,10 @@ void device_config::print() {
     Serial.printf ("│  INA219   : %-8s  interval: %3d min                  │\r\n",
                    g_deviceConfig.ina219Enabled ? "ENABLED" : "DISABLED",
                    g_deviceConfig.ina219IntervalMin);
-    Serial.printf ("│  Photo    : %02d:%02d  window: +%d min                      │\r\n",
+    Serial.printf ("\u2502  Photo    : %02d:%02d  window: +%d min  cold-boot photo: %-3s     \u2502\r\n",
                    g_deviceConfig.photoHour, g_deviceConfig.photoMinute,
-                   g_deviceConfig.photoWindowMin);
+                   g_deviceConfig.photoWindowMin,
+                   g_deviceConfig.coldBootPhotoEn ? "ON" : "OFF");
     Serial.printf ("│  WiFi     : %-47s│\r\n", g_deviceConfig.wifiSsid);
     Serial.printf ("│  Endpoint : %-47s│\r\n", g_deviceConfig.uploadEndpoint);
     Serial.printf ("│  OTA      : %-8s  %-38s│\r\n",
@@ -174,6 +184,7 @@ void device_config::print() {
                    g_deviceConfig.mqttEnabled ? "ENABLED" : "DISABLED",
                    mqttHost);
     Serial.printf ("│  BLE name : %-47s│\r\n", g_deviceConfig.deviceName);
+    Serial.printf ("│  BLE diag : %-47s│\r\n", g_deviceConfig.diagEn ? "ENABLED" : "DISABLED");
     Serial.printf ("│  Boot win : %-3u s  (0=web off, min 5 s CLI)             │\r\n",
                    g_deviceConfig.bootWindowSec);
     Serial.printf ("│  NTP 1    : %-47s│\r\n", g_deviceConfig.ntpServer1);

@@ -245,6 +245,10 @@
         <label class="field-label" for="ph_win">Window <small>minutes past target still OK (1–60)</small></label>
         <input type="number" id="ph_win" name="ph_win" min="1" max="60" value="{{ device_cfg.ph_win }}">
       </div>
+      <div class="field-row">
+        <label class="field-label" for="cb_photo_en">Cold-boot photo <small>take a photo on every power cycle, regardless of schedule</small></label>
+        <div class="check-wrap"><input type="checkbox" id="cb_photo_en" name="cb_photo_en" {% if device_cfg.cb_photo_en %}checked{% endif %}></div>
+      </div>
     </div>
   </div><!-- /tab-schedule -->
 
@@ -324,6 +328,10 @@
       <div class="field-row">
         <label class="field-label" for="boot_win">Boot window <small>seconds CLI+web available (0 = web off)</small></label>
         <input type="number" id="boot_win" name="boot_win" min="0" max="255" value="{{ device_cfg.boot_win }}">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="diag_en">BLE diagnostics <small>include next-wakeup &amp; next-photo countdowns in BLE scan response</small></label>
+        <div class="check-wrap"><input type="checkbox" id="diag_en" name="diag_en" {% if device_cfg.diag_en %}checked{% endif %}></div>
       </div>
     </div>
     <div class="card">
@@ -517,10 +525,12 @@
   <button class="btn btn-success" onclick="saveAndPush()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save &amp; Push to device</button>
   <button class="btn btn-primary" onclick="saveOnly()" {% if not data_dir_writable %}disabled title="Storage is read-only"{% endif %}>💾 Save only</button>
   <button class="btn btn-warn" onclick="pushDirect()">📡 Push to device (MQTT, no save)</button>
+  <button class="btn btn-sec" onclick="loadFromMqtt()">📥 Load from MQTT</button>
   <button class="btn btn-sec" onclick="viewConfigJson()">📄 View config</button>
   <span id="save-status"></span>
   <span id="pub-status"></span>
   <span id="push-direct-status"></span>
+  <span id="load-mqtt-status"></span>
   <span style="flex:1"></span>
   <a href="/device" class="btn btn-sec">↺ Reload</a>
 </div>
@@ -552,6 +562,7 @@ function buildPayload() {
     sht_en:  bool('sht_en'),  sht_int:  int_('sht_int'),
     ina_en:  bool('ina_en'),  ina_int:  int_('ina_int'),
     ph_hour: int_('ph_hour'), ph_min:   int_('ph_min'), ph_win: int_('ph_win'),
+    cb_photo_en: bool('cb_photo_en'),
     wifi_ssid: str('wifi_ssid'), wifi_pass: str('wifi_pass'),
     upload_ep: str('upload_ep'),
     ota_en:  bool('ota_en_push'), ota_url: str('ota_url_push'),
@@ -559,8 +570,9 @@ function buildPayload() {
     mqtt_port: int_('mqtt_port'), mqtt_user: str('mqtt_user'),
     mqtt_pass: str('mqtt_pass'), mqtt_id: str('mqtt_id'),
     dev_name: str('dev_name'), boot_win: int_('boot_win'),
+    diag_en: bool('diag_en'),
     ntp_srv1: str('ntp_srv1'), ntp_srv2: str('ntp_srv2'), ntp_tz: str('ntp_tz'),
-  };
+  };;
 }
 
 async function saveOnly() {
@@ -630,6 +642,39 @@ async function saveOtaConfig() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ mode, github_repo, manual_version, manual_notes }),
   });
+}
+
+// ── Load config from MQTT retained topic ─────────────────────────────────────
+async function loadFromMqtt() {
+  const st = document.getElementById('load-mqtt-status');
+  st.textContent = '⏳ Fetching…'; st.className = 'warn';
+  try {
+    const r = await fetch('/api/device-config/fetch-mqtt');
+    const j = await r.json();
+    if (!j.ok) { st.textContent = '✗ ' + (j.error || 'Error'); st.className = 'err'; return; }
+    const cfg = j.config;
+    // Populate every form field from the returned config
+    const setCheck = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    const setVal   = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+    setCheck('ds18_en', cfg.ds18_en); setVal('ds18_int', cfg.ds18_int);
+    setCheck('sht_en',  cfg.sht_en);  setVal('sht_int',  cfg.sht_int);
+    setCheck('ina_en',  cfg.ina_en);  setVal('ina_int',  cfg.ina_int);
+    setVal('ph_hour', cfg.ph_hour); setVal('ph_min', cfg.ph_min); setVal('ph_win', cfg.ph_win);
+    setCheck('cb_photo_en', cfg.cb_photo_en);
+    setVal('wifi_ssid', cfg.wifi_ssid); setVal('wifi_pass', cfg.wifi_pass);
+    setVal('upload_ep', cfg.upload_ep);
+    setCheck('ota_en_push', cfg.ota_en); setVal('ota_url_push', cfg.ota_url);
+    setCheck('mqtt_en', cfg.mqtt_en); setVal('mqtt_host', cfg.mqtt_host);
+    setVal('mqtt_port', cfg.mqtt_port); setVal('mqtt_user', cfg.mqtt_user);
+    setVal('mqtt_pass', cfg.mqtt_pass); setVal('mqtt_id', cfg.mqtt_id);
+    setVal('dev_name', cfg.dev_name); setVal('boot_win', cfg.boot_win);
+    setCheck('diag_en', cfg.diag_en);
+    setVal('ntp_srv1', cfg.ntp_srv1); setVal('ntp_srv2', cfg.ntp_srv2); setVal('ntp_tz', cfg.ntp_tz);
+    updateTopicPreview();
+    st.textContent = '✓ Loaded from MQTT'; st.className = 'ok';
+  } catch (e) {
+    st.textContent = '✗ Network error'; st.className = 'err';
+  }
 }
 
 // ── MQTT topic preview ────────────────────────────────────────────────────────

@@ -135,6 +135,10 @@ static bool applyConfig(const String& json) {
     // ── BLE name ───────────────────────────────────────────────────────────
     tryStr("dev_name", g_deviceConfig.deviceName, sizeof(g_deviceConfig.deviceName));
 
+    // ── Boot options ───────────────────────────────────────────────────────
+    tryBool("cb_photo_en", g_deviceConfig.coldBootPhotoEn);
+    tryBool("diag_en",     g_deviceConfig.diagEn);
+
     return changed;
 }
 

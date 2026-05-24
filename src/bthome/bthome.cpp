@@ -100,6 +100,23 @@ void bthome::advertise(const BtHomePayload& payload) {
     NimBLEAdvertisementData scanResp;
     scanResp.setName(g_deviceConfig.deviceName);
 
+    // Optional diagnostic timing data (next wakeup / next photo countdown).
+    // Packed as Manufacturer Specific Data (AD 0xFF) to avoid overflowing the
+    // 31-byte limit of the main BTHome advertisement packet.
+    // Format: [0xFF][0xFF] (company ID, unregistered) | uint16 LE wakeup_s | uint16 LE photo_s.
+    // Value 0xFFFF = unknown.
+    if (payload.hasDiag) {
+        uint16_t wakeS  = (payload.nextWakeupS  >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextWakeupS;
+        uint16_t photoS = (payload.nextPhotoS   >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextPhotoS;
+        uint8_t manuf[6] = {
+            0xFF, 0xFF,
+            (uint8_t)(wakeS  & 0xFF), (uint8_t)(wakeS  >> 8),
+            (uint8_t)(photoS & 0xFF), (uint8_t)(photoS >> 8),
+        };
+        scanResp.setManufacturerData(std::string(reinterpret_cast<const char*>(manuf), sizeof(manuf)));
+        Serial.printf("[BTHome] Diag: wakeup=%us photo=%us\n", payload.nextWakeupS, payload.nextPhotoS);
+    }
+
     pAdv->setScanResponse(true);
     pAdv->setAdvertisementData(advData);
     pAdv->setScanResponseData(scanResp);

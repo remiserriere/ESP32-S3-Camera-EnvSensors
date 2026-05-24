@@ -60,6 +60,12 @@ class DeviceConfigPayload:
     ntp_srv2:  str  = "time.google.com"
     ntp_tz:    str  = "CET-1CEST,M3.5.0,M10.5.0/3"
 
+    # Boot options
+    cb_photo_en: bool = False   # take a photo on every cold boot (power cycle)
+
+    # BLE diagnostics
+    diag_en:   bool = False     # include next-wakeup/next-photo counters in BLE scan response
+
     # ------------------------------------------------------------------
     # Serialisation helpers
     # ------------------------------------------------------------------
@@ -84,6 +90,74 @@ class DeviceConfigPayload:
 # ── Storage helpers ─────────────────────────────────────────────────────────────
 
 _FILENAME = "device_config.json"
+
+
+# ── MQTT fetch ──────────────────────────────────────────────────────────────────
+
+def fetch_device_config_from_mqtt(
+    service_config: ServiceConfig,
+    base_payload: DeviceConfigPayload | None = None,
+) -> DeviceConfigPayload:
+    """Subscribe to the retained config topic and return the merged config.
+
+    The ESP32 supports partial config updates: keys absent from the retained
+    JSON leave the device's current value unchanged.  This function mirrors
+    that behaviour by overlaying the MQTT payload on top of *base_payload*
+    (which defaults to dataclass defaults when not supplied).
+
+    Raises :class:`RuntimeError` on connection failure or when no retained
+    message arrives within the 5-second timeout.
+    """
+    if not service_config.mqtt_enabled:
+        raise RuntimeError("MQTT is disabled in the service configuration")
+    if not service_config.mqtt_host:
+        raise RuntimeError("MQTT broker host is not configured")
+
+    base = base_payload or DeviceConfigPayload()
+    topic = f"{base.mqtt_id}/config/set"
+
+    received: dict[str, Any] | None = None
+
+    def _on_message(
+        client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage  # noqa: ARG001
+    ) -> None:
+        nonlocal received
+        try:
+            received = json.loads(msg.payload.decode("utf-8"))
+        except Exception:
+            pass
+
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id=service_config.mqtt_client_id + "-fetch",
+    )
+    client.on_message = _on_message
+    if service_config.mqtt_username:
+        client.username_pw_set(service_config.mqtt_username, service_config.mqtt_password)
+    if service_config.mqtt_use_ssl:
+        client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+
+    client.connect(service_config.mqtt_host, service_config.mqtt_port, 30)
+    try:
+        client.subscribe(topic, qos=0)
+        deadline = 5.0
+        step = 0.05
+        elapsed = 0.0
+        while received is None and elapsed < deadline:
+            client.loop(timeout=step)
+            elapsed += step
+    finally:
+        client.disconnect()
+
+    if received is None:
+        raise RuntimeError(f"No retained message found on topic '{topic}'")
+
+    # Partial-merge: seed from base, then overlay only the keys present in the
+    # MQTT payload — exactly mirrors the device's partial-update behaviour.
+    merged = base.to_dict()
+    known = set(merged.keys())
+    merged.update({k: v for k, v in received.items() if k in known})
+    return DeviceConfigPayload.from_dict(merged)
 
 
 def load_device_config(data_dir: Path) -> DeviceConfigPayload:

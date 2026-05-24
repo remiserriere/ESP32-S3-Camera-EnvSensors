@@ -1,0 +1,67 @@
+name: Docker – Manual build & push
+# Manually trigger a Docker image build for any branch + commit.
+# The image is tagged with the short SHA of the given commit.
+#
+# Usage:
+#   1. Go to Actions → "Docker – Manual build & push"
+#   2. Click "Run workflow"
+#   3. Fill in the branch and the full (or short) commit SHA
+#   4. The image is pushed to GHCR as:
+#        ghcr.io/<owner>/gauge-service:<short-sha>
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        #default: 'feature/mqtt-fetch-coldboot-ble-diag'
+      commit_sha:
+        description: 'Full commit SHA to build (must belong to the branch above)'
+        required: true
+permissions:
+  contents: read
+  packages: write
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/gauge-service
+jobs:
+  docker:
+    name: Build & push gauge-service image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout specific commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 1
+      - name: Compute short SHA
+        id: sha
+        run: echo "SHORT_SHA=${COMMIT_SHA::7}" >> "$GITHUB_OUTPUT"
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: gauge-service
+          file: gauge-service/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.sha.outputs.SHORT_SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Summary
+        run: |
+          echo "### Docker image published 🐳" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ env.IMAGE_NAME }}:${{ steps.sha.outputs.SHORT_SHA }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ inputs.branch }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ inputs.commit_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"

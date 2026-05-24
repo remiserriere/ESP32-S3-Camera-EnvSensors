@@ -377,6 +377,11 @@
                value="{{ config.home_assistant_discovery_prefix }}"
                {% if f in locked %}disabled{% endif %}>
       </div>
+
+      <div style="margin-top:1rem;">
+        <button type="button" class="btn btn-sec" onclick="forceDiscovery()" {% if not config.mqtt_enabled %}disabled title="MQTT is disabled"{% endif %}>📡 Force MQTT autodiscovery</button>
+        <span id="discovery-status" style="margin-left:.75rem;font-size:.9rem;"></span>
+      </div>
     </div>
 
     <!-- ── OTA / GitHub ── -->
@@ -531,6 +536,26 @@ async function saveConfig(andReboot) {
     } else {
       st.className = 'ok'; st.textContent = '✅ Saved — all changes applied immediately.';
     }
+  } catch (e) {
+    st.className = 'err'; st.textContent = '❌ Request failed: ' + e;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Force MQTT autodiscovery
+// ─────────────────────────────────────────────────────────────────────────────
+async function forceDiscovery() {
+  const st = document.getElementById('discovery-status');
+  st.className = ''; st.textContent = '⏳ Publishing…';
+  try {
+    const resp = await fetch('/api/mqtt/discover', {method: 'POST'});
+    const result = await resp.json();
+    if (!resp.ok) {
+      st.className = 'err';
+      st.textContent = '❌ ' + (result.error || 'Failed');
+      return;
+    }
+    st.className = 'ok'; st.textContent = '✅ Autodiscovery published';
   } catch (e) {
     st.className = 'err'; st.textContent = '❌ Request failed: ' + e;
   }

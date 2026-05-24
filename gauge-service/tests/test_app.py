@@ -624,6 +624,38 @@ def test_device_config_publish_no_mqtt(tmp_path: Path) -> None:
     assert 'error' in result
 
 
+def test_mqtt_discover_disabled(tmp_path: Path) -> None:
+    """POST /api/mqtt/discover with MQTT disabled returns 400."""
+    config = _base_config(tmp_path, mqtt_enabled=False)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+    resp = client.post('/api/mqtt/discover')
+    assert resp.status_code == 400
+    result = resp.get_json()
+    assert result['ok'] is False
+    assert 'error' in result
+
+
+def test_mqtt_discover_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /api/mqtt/discover with MQTT enabled calls publish_discovery and returns ok."""
+    config = _base_config(tmp_path, mqtt_enabled=True)
+    flask_app = create_app(config)
+    client = flask_app.test_client()
+
+    called = []
+    from gauge_service import mqtt as mqtt_module
+
+    def fake_publish_discovery(self: mqtt_module.MqttPublisher) -> None:
+        called.append(True)
+
+    monkeypatch.setattr(mqtt_module.MqttPublisher, 'publish_discovery', fake_publish_discovery)
+    resp = client.post('/api/mqtt/discover')
+    assert resp.status_code == 200
+    result = resp.get_json()
+    assert result['ok'] is True
+    assert called
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OTA management API
 # ─────────────────────────────────────────────────────────────────────────────

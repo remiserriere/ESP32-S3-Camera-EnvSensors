@@ -11,6 +11,7 @@
 #include <WiFiServer.h>
 #include <WiFiClient.h>
 #include "mqtt_config/mqtt_config.h"
+#include "ota/ota.h"
 #include "config.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -1368,6 +1369,24 @@ void serial_cli::offerConfigWindow() {
         }
     }
 
+    // ── Auto-sync MQTT config while Wi-Fi is already up ──────────────────────
+    if (wifiConnected && g_deviceConfig.mqttEnabled) {
+        Serial.println(F("[Config] Synchronisation de la config MQTT..."));
+        bool updated = mqtt_config::syncFromBroker();
+        Serial.println(updated
+            ? F("[Config] Config MQTT appliquée et sauvegardée.")
+            : F("[Config] Pas de mise à jour MQTT disponible."));
+    }
+
+    // ── Auto-check OTA ────────────────────────────────────────────────────────
+    // If newer firmware is found it is applied and the device reboots; otherwise
+    // execution falls through to the interactive config window.
+    if (wifiConnected && g_deviceConfig.otaEnabled) {
+        Serial.println(F("[Config] Vérification OTA..."));
+        ota::checkAndApply();   // reboots on success; returns false when up-to-date
+        Serial.println(F("[Config] Firmware à jour."));
+    }
+
     Serial.printf("[Config] Fenêtre : %u s – appuyez sur une touche pour le menu CLI.\r\n",
                   totalMs / 1000);
     Serial.flush();
@@ -1388,7 +1407,11 @@ void serial_cli::offerConfigWindow() {
     bool     webHandled  = false;
     bool     serverPaused = false;
 
-    while (millis() < deadline) {
+    // Outer loop re-enters after the deadline if a /pause request arrives in the
+    // final milliseconds (race-condition drain: one extra handleBootWebClient()
+    // is called after each inner-loop exit to catch any pending connection).
+    do {
+    while (serverPaused || millis() < deadline) {
         // CLI keypress → stop HTTP server (free port 80) but keep WiFi alive
         // so the CLI diagnostics can use it without reconnecting.
         if (Serial.available()) {
@@ -1399,7 +1422,9 @@ void serial_cli::offerConfigWindow() {
         }
 
         if (serverStarted) {
-            int secsLeft = (int)((deadline - millis()) / 1000);
+            // When paused, pass -1 so a page reload shows "en pause" instead of
+            // a stale or very-large countdown value.
+            int secsLeft = serverPaused ? -1 : (int)((deadline - millis()) / 1000);
             int action   = handleBootWebClient(server, secsLeft, deadline, serverPaused);
             if (action == 1) {
                 server.end(); serverStarted = false;
@@ -1419,6 +1444,12 @@ void serial_cli::offerConfigWindow() {
 
         delay(10);
     }
+    // ── Drain: process one extra pending client that may have arrived at the ─
+    // ── exact deadline boundary (e.g. a /pause click in the last second).   ─
+    if (serverStarted && !cliMode && !webHandled) {
+        handleBootWebClient(server, -1, deadline, serverPaused);
+    }
+    } while (serverPaused && !cliMode && !webHandled);
 
     if (serverStarted) { server.end(); serverStarted = false; }
 

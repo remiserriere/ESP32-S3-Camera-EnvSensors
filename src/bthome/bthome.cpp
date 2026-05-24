@@ -2,7 +2,6 @@
 #include "../config.h"
 #include "../device_config.h"
 #include <Arduino.h>
-//#include <NimBLEExtAdvertising.h>
 #include <NimBLEDevice.h>
 
 // BTHome v2 specification:
@@ -16,7 +15,7 @@
 //   0x03 – Humidity         uint16,  factor 0.01  %
 //   0x0B – Power            uint24,  factor 0.01  W
 //   0x0C – Voltage          uint16,  factor 0.001 V
-//   0x42 - Diag uptimes     uint24,  factor 0.001 s 
+//   0x42 - Diag uptime      uint24,  factor 1 s (not stanrard ! should be 0.001s but we don't need that precision which would limit max to ~70 min, we need 24 hours at least)
 //   0x43 – Current          uint16,  factor 0.001 A
 
 static constexpr uint8_t BTHOME_DEVICE_INFO = 0x40;  // version 2, non-encrypted
@@ -78,13 +77,10 @@ static std::vector<uint8_t> buildServiceData(const BtHomePayload& p) {
         Serial.printf("[BTHome] Voltage: %.3f V → raw=0x%04X\r\n", p.voltage, raw);
     }
     // Diagnostic timing data
-    //if (p.hasDiag) {
-    //    uint32_t wakeS  = (p.nextWakeupS * 1000.0f  >= 0xFFFFFFU) ? 0xFFFFFFU : (uint32_t)(p.nextWakeupS * 1000.0f);
-    //    uint32_t photoS = (p.nextPhotoS * 1000.0f   >= 0xFFFFFFU) ? 0xFFFFFFU : (uint32_t)(p.nextPhotoS * 1000.0f);
-    //    appendU24(data, 0x42, wakeS);
-    //    appendU24(data, 0x42, photoS);
-    //    Serial.printf("[BTHome] Diag (ms): wakeup=%u photo=%u\r\n", wakeS, photoS);
-    //}
+    if (p.hasDiag) {
+        appendU24(data, 0x42, p.nextPhotoS);
+        Serial.printf("[BTHome] Diag (s): photo=%u\r\n", p.nextPhotoS);
+    }
     if (p.hasCurrent) {
         uint16_t raw = (uint16_t)roundf(p.currentA * 1000.0f);
         appendU16(data, 0x43, raw);
@@ -116,25 +112,25 @@ void bthome::advertise(const BtHomePayload& payload) {
 
     // Scan response packet: name only (sent on explicit scan request).
     // Home Assistant reads the name from scan responses fine.
-    NimBLEAdvertisementData scanResp;
-    scanResp.setName(g_deviceConfig.deviceName);
+    //NimBLEAdvertisementData scanResp;
+    //scanResp.setName(g_deviceConfig.deviceName);
 
     // Optional diagnostic timing data (next wakeup / next photo countdown).
     // Packed as Manufacturer Specific Data (AD 0xFF) to avoid overflowing the
     // 31-byte limit of the main BTHome advertisement packet.
     // Format: [0xFF][0xFF] (company ID, unregistered) | uint16 LE wakeup_s | uint16 LE photo_s.
     // Value 0xFFFF = unknown.
-    if (payload.hasDiag) {
-        uint16_t wakeS  = (payload.nextWakeupS  >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextWakeupS;
-        uint16_t photoS = (payload.nextPhotoS   >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextPhotoS;
-        uint8_t manuf[6] = {
-            0xFF, 0xFF,
-            (uint8_t)(wakeS  & 0xFF), (uint8_t)(wakeS  >> 8),
-            (uint8_t)(photoS & 0xFF), (uint8_t)(photoS >> 8),
-        };
-        scanResp.setManufacturerData(std::string(reinterpret_cast<const char*>(manuf), sizeof(manuf)));
-        Serial.printf("[BTHome] Diag: wakeup=%us photo=%us\r\n", payload.nextWakeupS, payload.nextPhotoS);
-    }
+    //if (payload.hasDiag) {
+    //    uint16_t wakeS  = (payload.nextWakeupS  >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextWakeupS;
+    //    uint16_t photoS = (payload.nextPhotoS   >= 0xFFFFU) ? 0xFFFFU : (uint16_t)payload.nextPhotoS;
+    //    uint8_t manuf[6] = {
+    //        0xFF, 0xFF,
+    //        (uint8_t)(wakeS  & 0xFF), (uint8_t)(wakeS  >> 8),
+    //        (uint8_t)(photoS & 0xFF), (uint8_t)(photoS >> 8),
+    //    };
+        //scanResp.setManufacturerData(std::string(reinterpret_cast<const char*>(manuf), sizeof(manuf)));
+        //Serial.printf("[BTHome] Diag: wakeup=%us photo=%us\r\n", payload.nextWakeupS, payload.nextPhotoS);
+    //}
 
     // Logging 
     Serial.printf("[BTHome] Advertising with name='%s' and %zu bytes service data\r\n",
@@ -145,9 +141,9 @@ void bthome::advertise(const BtHomePayload& payload) {
     }
     Serial.println();
 
-    pAdv->setScanResponse(true);
+    //pAdv->setScanResponse(true);
     pAdv->setAdvertisementData(advData);
-    pAdv->setScanResponseData(scanResp);
+    //pAdv->setScanResponseData(scanResp);
 
     // NimBLE start() takes duration in seconds; round up to at least 1 s
     uint32_t advSeconds = (BTHOME_ADV_DURATION_MS + 999) / 1000;
